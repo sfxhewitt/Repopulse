@@ -1983,21 +1983,26 @@
       }
 
       function renderAuthButtonState() {
-        const icon = document.getElementById('authBtnIcon');
         const label = document.getElementById('authBtnLabel');
         const btn = document.getElementById('openAuthModalBtn');
 
+        // Lucide swaps the <i> placeholder for an <svg>, whose className is
+        // read-only, so build a fresh placeholder on every render.
+        const icon = document.createElement('i');
+        icon.id = 'authBtnIcon';
+
         if (state.token) {
           icon.setAttribute('data-lucide', 'shield-check');
-          icon.className = 'w-3.5 h-3.5 text-emerald-500';
+          icon.setAttribute('class', 'w-3.5 h-3.5 text-emerald-500');
           label.textContent = state.authenticatedUser ? `@${state.authenticatedUser}` : 'PAT Active';
           btn.classList.add('border-emerald-500/35');
         } else {
           icon.setAttribute('data-lucide', 'key-round');
-          icon.className = 'w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400';
+          icon.setAttribute('class', 'w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400');
           label.textContent = 'Auth / Private';
           btn.classList.remove('border-emerald-500/35');
         }
+        document.getElementById('authBtnIcon').replaceWith(icon);
         lucide.createIcons();
       }
 
