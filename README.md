@@ -1,10 +1,37 @@
 # RepoPulse
 
-A single-page dashboard for any GitHub account's repositories: totals, language mix, how recently each repo was pushed, and a per-repo inspector (languages by bytes, recent commits, rendered README).
+A cockpit for your GitHub repos. It runs entirely in the browser; there is no backend.
 
-- Everything runs in the browser against `api.github.com`; there is no backend.
-- Opens on a sample workspace. Enter a username to load live data.
-- An optional personal access token (stored only in your browser) raises the rate limit to 5,000 requests/hour and shows your private repos.
-- The filtered list exports as CSV or JSON.
+Live: https://sfxhewitt.github.io/Repopulse/
 
-The whole app is `index.html`. Open it locally or serve it with GitHub Pages.
+## What it shows
+
+- **Pulse**: how many things need you, what you shipped this week, your contribution year, streaks, and which projects are heating up or cooling off.
+- **Needs you**: pull requests ready to merge or held up, failing CI on default branches, Dependabot alerts, stale branches and repos gone quiet. You can merge, re-run failed jobs and archive from here; each asks first.
+- **Shipped**: commits that reached a default branch in the last 7 or 30 days.
+- **Repos**: every repo with a health score and the reasons behind it, filters, export, and an inspector.
+- **Compare**: two accounts side by side (public repos).
+- **Ask**: questions about your repos answered by Claude, using your own Anthropic API key.
+
+A shareable card (PNG) is under the Card button. `Ctrl K` opens search and commands.
+
+## Tokens
+
+Without a token you get the public repo list. A GitHub personal access token unlocks everything else, because pull requests, checks and activity come from GitHub's GraphQL API, which only answers signed-in requests.
+
+- Read-only use: a fine-grained token with read access to Contents, Metadata, Pull requests, Actions and Dependabot alerts.
+- To merge, re-run jobs or archive from the page: add write access to Pull requests, Contents and Actions, and Administration for archiving.
+
+Tokens and the Anthropic key stay in your browser's storage and are sent only to `api.github.com` and `api.anthropic.com`. The last loaded data is also saved in the browser so the page opens instantly and works offline.
+
+## Develop
+
+```
+npm install
+npm run build        # compiles src/app.css to assets/app.css
+python3 -m http.server
+```
+
+`tests/e2e.py <site dir> <screenshot dir>` drives the app in Chromium (Playwright for Python) with GitHub and Anthropic stubbed. `node tests/gqlcheck.js js/cockpit.js <schema.graphql>` validates the query against GitHub's schema from `@octokit/graphql-schema`.
+
+GitHub Pages serves the `gh-pages` branch; push `main` to both.

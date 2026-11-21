@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html:not(.dark) { color-scheme: light; }
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible { outline: 2px solid #4A5EFB; outline-offset: 2px; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+.dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 9999px; }
+html:not(.dark) ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.14); border-radius: 9999px; }
+
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ---- view navigation --------------------------------------------------- */
+@layer components {
+  .nav-tab {
+    @apply relative flex items-center gap-1.5 px-3 py-2.5 text-sm text-zinc-500 dark:text-zinc-400 whitespace-nowrap border-b-2 border-transparent -mb-px transition-colors;
+  }
+  .nav-tab:hover { @apply text-zinc-900 dark:text-zinc-100; }
+  .nav-tab[aria-current='page'] { @apply text-zinc-900 dark:text-zinc-100 border-indigo-600 dark:border-indigo-400 font-medium; }
+  .nav-bottom {
+    @apply flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[10px] text-zinc-500 dark:text-zinc-400;
+  }
+  .nav-bottom[aria-current='page'] { @apply text-indigo-600 dark:text-indigo-300 font-medium; }
+  .nav-count {
+    @apply inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium bg-rose-600 text-white;
+  }
+  .nav-count-float { @apply absolute -top-1.5 -right-3; }
+
+  .panel { @apply rounded-xl border border-zinc-200/90 dark:border-white/[0.08] bg-white dark:bg-[#1B1823]; }
+  .btn { @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-colors disabled:opacity-50; }
+  .btn-quiet { @apply bg-zinc-100 hover:bg-zinc-200 dark:bg-white/[0.06] dark:hover:bg-white/[0.12] text-zinc-800 dark:text-zinc-200; }
+  .btn-accent { @apply bg-indigo-600 hover:bg-indigo-500 text-white; }
+  .btn-danger { @apply bg-rose-600 hover:bg-rose-500 text-white; }
+  .field { @apply w-full h-9 px-3 rounded-lg text-sm bg-zinc-100/80 dark:bg-[#14121A] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 border border-zinc-200 dark:border-white/[0.1]; }
+}
+
+/* ---- the pulse strip: a chart-recorder trace on graph paper ------------ */
+.pulse-paper {
+  background-color: #fffdfb;
+  background-image:
+    linear-gradient(#F1CFCF 1px, transparent 1px),
+    linear-gradient(90deg, #F1CFCF 1px, transparent 1px),
+    linear-gradient(rgba(241, 207, 207, 0.45) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(241, 207, 207, 0.45) 1px, transparent 1px);
+  background-size: 40px 40px, 40px 40px, 8px 8px, 8px 8px;
+}
+.dark .pulse-paper {
+  background-color: #17141E;
+  background-image:
+    linear-gradient(#3A2230 1px, transparent 1px),
+    linear-gradient(90deg, #3A2230 1px, transparent 1px),
+    linear-gradient(rgba(58, 34, 48, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(58, 34, 48, 0.5) 1px, transparent 1px);
+}
+.pulse-trace { stroke: #1B1722; }
+.dark .pulse-trace { stroke: #F3EEEC; }
+.pulse-head { fill: #E11D48; }
+@media (prefers-reduced-motion: no-preference) {
+  .pulse-trace { stroke-dasharray: var(--len, 4000); stroke-dashoffset: var(--len, 4000); animation: pulse-draw 1.6s ease-out forwards; }
+  .pulse-head { animation: pulse-beat 1.4s ease-in-out 1.6s infinite; transform-box: fill-box; transform-origin: center; }
+}
+@keyframes pulse-draw { to { stroke-dashoffset: 0; } }
+@keyframes pulse-beat { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.9); opacity: 0.45; } }
+
+/* heatmap cells */
+.heat-0 { fill: #EDE5E3; } .dark .heat-0 { fill: #2A2532; }
+.heat-1 { fill: #C3CDFF; } .dark .heat-1 { fill: #1F2CA3; }
+.heat-2 { fill: #7284FF; } .dark .heat-2 { fill: #2F43EE; }
+.heat-3 { fill: #2F43EE; } .dark .heat-3 { fill: #7284FF; }
+.heat-4 { fill: #1E2A80; } .dark .heat-4 { fill: #C3CDFF; }
+
+.kb-selected { outline: 2px solid #4A5EFB; outline-offset: 2px; }
+
+/* ---- README rendering -------------------------------------------------- */
+.readme-prose { font-size: 0.875rem; line-height: 1.65; word-break: break-word; }
+.readme-prose h1, .readme-prose h2, .readme-prose h3, .readme-prose h4 { font-weight: 600; letter-spacing: -0.02em; margin-top: 1.4em; margin-bottom: 0.6em; }
+.readme-prose h1 { font-size: 1.35rem; padding-bottom: 0.4rem; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
+.readme-prose h2 { font-size: 1.125rem; padding-bottom: 0.3rem; border-bottom: 1px solid rgba(128, 128, 128, 0.16); }
+.readme-prose h3 { font-size: 0.975rem; }
+.readme-prose p { margin-bottom: 0.85em; }
+.readme-prose ul, .readme-prose ol { margin-bottom: 0.9em; padding-left: 1.35em; }
+.readme-prose ul { list-style-type: disc; }
+.readme-prose ol { list-style-type: decimal; }
+.readme-prose li { margin-bottom: 0.3em; }
+.readme-prose a { color: #7284FF; text-decoration: underline; text-underline-offset: 2px; }
+html:not(.dark) .readme-prose a { color: #2F43EE; }
+.readme-prose code { font-family: 'IBM Plex Mono', monospace; font-size: 0.8em; padding: 0.15em 0.4em; border-radius: 4px; background: rgba(128, 128, 128, 0.16); }
+.readme-prose pre { margin: 0.9em 0; padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; border: 1px solid rgba(255, 255, 255, 0.08); background: #14121A; color: #E6DFDE; }
+html:not(.dark) .readme-prose pre { background: #F3EEEC; color: #1B1722; border-color: #E6DFDE; }
+.readme-prose pre code { background: transparent; padding: 0; font-size: 0.8rem; line-height: 1.55; }
+.readme-prose blockquote { border-left: 3px solid #4A5EFB; padding-left: 0.9rem; margin: 0.9em 0; opacity: 0.85; }
+.readme-prose table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.82rem; }
+.readme-prose th, .readme-prose td { border: 1px solid rgba(128, 128, 128, 0.2); padding: 0.45rem 0.65rem; text-align: left; }
+.readme-prose img { max-width: 100%; height: auto; border-radius: 5px; display: inline-block; }
+.readme-prose hr { border: none; border-top: 1px solid rgba(128, 128, 128, 0.2); margin: 1.25em 0; }
+
+.drawer-backdrop { transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1); }
+.drawer-panel { transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1); }
