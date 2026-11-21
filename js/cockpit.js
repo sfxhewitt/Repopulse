@@ -16,7 +16,7 @@
   const KEYS = { COCKPIT: 'repopulse_cockpit_v1', ANTHROPIC: 'repopulse_anthropic_key', MODEL: 'repopulse_anthropic_model' };
 
   // status: demo | locked (no token) | loading | ready | error | unsupported (organisation)
-  const C = { view: 'pulse', data: null, status: 'loading', error: '', run: 0, shipRange: 7, compare: null, ask: { busy: false, answer: '', error: '' } };
+  const C = { view: 'pulse', data: null, status: 'loading', error: '', run: 0, shipRange: 7, compare: null, ask: { busy: false, error: '', pending: '', turns: [] } };
 
   /* =====================================================================
    * 1. Data: one GraphQL query per 20 repos
@@ -753,7 +753,17 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       (keep ? sessionStorage : localStorage).removeItem(KEYS.ANTHROPIC);
       localStorage.setItem(KEYS.MODEL, model);
     } catch { /* storage unavailable: the key lives for this page only */ }
-    C.ask = { busy: true, answer: '', error: '', question };
+    // Earlier turns go back with each request, so follow-ups know what was said.
+    const turns = C.ask.turns;
+    const messages = [];
+    turns.forEach((t, i) => {
+      messages.push({ role: 'user', content: i === 0 ? `${t.context}\n\nQuestion: ${t.q}` : t.q });
+      messages.push({ role: 'assistant', content: t.a });
+    });
+    const context = turns.length ? '' : askContext();
+    messages.push({ role: 'user', content: turns.length ? question : `${context}\n\nQuestion: ${question}` });
+    C.ask = { busy: true, error: '', pending: question, turns };
+    if ($('askQuestion')) $('askQuestion').value = '';
     renderAsk();
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -765,16 +775,23 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
         body: JSON.stringify({
           model, max_tokens: 1200,
           system: "You answer questions about one developer's GitHub repositories using only the data provided. Be specific: name repos and give the evidence. Keep it short. Use Markdown.",
-          messages: [{ role: 'user', content: `${askContext()}\n\nQuestion: ${question}` }],
+          messages,
         }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((json.error && json.error.message) || `The API returned ${res.status}.`);
-      C.ask = { busy: false, error: '', question, answer: (json.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n') };
+      const a = (json.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      C.ask = { busy: false, error: '', pending: '', turns: [...turns, { q: question, a, context }] };
     } catch (err) {
-      C.ask = { busy: false, answer: '', question, error: err.message === 'Failed to fetch' ? "The request didn't reach Anthropic. Check your connection." : err.message };
+      // Keep the question in the box so it can be sent again.
+      C.ask = { busy: false, pending: '', turns, error: err.message === 'Failed to fetch' ? "The request didn't reach Anthropic. Check your connection." : err.message };
+      renderAsk();
+      if ($('askQuestion')) $('askQuestion').value = question;
+      return;
     }
     renderAsk();
+    const last = document.querySelector('#askThread > :last-child');
+    if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function renderAsk() {
@@ -783,23 +800,25 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     const current = $('askKey') ? $('askKey').value : stored;
     const model = $('askModel') ? $('askModel').value : localStorage.getItem(KEYS.MODEL) || 'claude-sonnet-5-5';
     const keep = $('askKeep') ? $('askKeep').checked : Boolean(localStorage.getItem(KEYS.ANTHROPIC));
-    const q = $('askQuestion') ? $('askQuestion').value : C.ask.question || '';
-    let answer = '';
-    if (C.ask.busy) answer = `<div class="panel p-5 text-sm text-zinc-500">Thinking…</div>`;
-    else if (C.ask.error) answer = `<div class="panel p-5 text-sm text-rose-600 dark:text-rose-300">${h(C.ask.error)}</div>`;
-    else if (C.ask.answer) {
-      const raw = window.marked ? window.marked.parse(C.ask.answer) : `<pre>${h(C.ask.answer)}</pre>`;
-      const safe = window.DOMPurify ? window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } }) : h(C.ask.answer);
-      answer = `<div class="panel p-5 readme-prose">${safe}</div>`;
-    }
+    const q = $('askQuestion') ? $('askQuestion').value : '';
+    const started = C.ask.turns.length > 0;
+    const md = (text) => {
+      const raw = window.marked ? window.marked.parse(text) : `<pre>${h(text)}</pre>`;
+      return window.DOMPurify ? window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } }) : h(text);
+    };
+    const asked = (text) => `<p class="font-display font-bold text-lg tracking-tight">${h(text)}</p>`;
+    let thread = C.ask.turns.map((t) => `<div class="panel p-5">${asked(t.q)}<div class="readme-prose mt-2">${md(t.a)}</div></div>`).join('');
+    if (C.ask.busy) thread += `<div class="panel p-5">${asked(C.ask.pending)}<p class="text-sm text-zinc-500 mt-2">Thinking…</p></div>`;
+    if (C.ask.error) thread += `<div class="panel p-5 text-sm text-rose-600 dark:text-rose-300">${h(C.ask.error)}</div>`;
     el.innerHTML = `
       <div>
         <h1 class="font-display font-bold tracking-tight text-3xl sm:text-4xl">Ask about your repos</h1>
         <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1 max-w-2xl">Claude answers from the data on this page. Asking sends a summary of ${S.mode === 'demo' ? 'the sample repos' : `@${h(S.username)}'s repos${S.includesPrivate ? ', private ones included,' : ''}`} to Anthropic using your own API key.</p>
       </div>
+      <div id="askThread" class="space-y-3">${thread}</div>
       <form id="askForm" class="panel p-4 space-y-3">
-        <textarea id="askQuestion" rows="2" class="field h-auto py-2" placeholder="Which projects have I neglected?" aria-label="Your question">${h(q)}</textarea>
-        <div class="flex flex-wrap gap-1.5">${ASK_SUGGESTIONS.map((s) => `<button type="button" data-ask-suggest="${h(s)}" class="btn btn-quiet">${h(s)}</button>`).join('')}</div>
+        <textarea id="askQuestion" rows="2" class="field h-auto py-2" placeholder="${started ? 'Ask a follow-up' : 'Which projects have I neglected?'}" aria-label="Your question">${h(q)}</textarea>
+        ${started ? '' : `<div class="flex flex-wrap gap-1.5">${ASK_SUGGESTIONS.map((s) => `<button type="button" data-ask-suggest="${h(s)}" class="btn btn-quiet">${h(s)}</button>`).join('')}</div>`}
         <div class="grid grid-cols-1 sm:grid-cols-[1fr_14rem] gap-2.5 pt-2 border-t border-zinc-200 dark:border-white/[0.08]">
           <label class="block text-xs text-zinc-600 dark:text-zinc-400">Anthropic API key
             <input id="askKey" type="password" class="field font-mono mt-1" placeholder="sk-ant-…" autocomplete="off" value="${h(current)}" /></label>
@@ -808,10 +827,13 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
         </div>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <label class="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400"><input id="askKeep" type="checkbox" ${keep ? 'checked' : ''} /> Keep the key on this device</label>
-          <button type="submit" class="btn btn-accent h-9 px-4" ${C.ask.busy ? 'disabled' : ''}><i data-lucide="send" class="w-3.5 h-3.5"></i>Ask</button>
+          <div class="flex items-center gap-2">
+            ${started ? '<button type="button" data-act="ask-reset" class="btn btn-quiet h-9 px-4">Start over</button>' : ''}
+            <button type="submit" class="btn btn-accent h-9 px-4" ${C.ask.busy ? 'disabled' : ''}><i data-lucide="send" class="w-3.5 h-3.5"></i>${started ? 'Send' : 'Ask'}</button>
+          </div>
         </div>
-      </form>
-      ${answer}`;
+      </form>`;
+    icons();
   }
 
   function renderViews() {
@@ -1237,7 +1259,10 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       showView(cmp.length === 2 ? 'compare' : view || 'pulse', { keepScroll: true });
       if (cmp.length === 2) runCompare(cmp[0], cmp[1]);
     },
-    onUserChange() {},
+    onUserChange(login) {
+      if (C.askFor && C.askFor !== login) C.ask = { busy: false, error: '', pending: '', turns: [] };
+      C.askFor = login;
+    },
     onData() {
       C.booted = true;
       const run = ++C.run;
@@ -1345,6 +1370,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     else if (kind === 'merge') mergePR(nwo, Number(act.getAttribute('data-num')));
     else if (kind === 'rerun') rerunCI(nwo);
     else if (kind === 'archive') archiveRepo(nwo);
+    else if (kind === 'ask-reset') { C.ask = { busy: false, error: '', pending: '', turns: [] }; renderAsk(); }
     else if (kind === 'copy-compare') RP.copyToClipboard(location.href, 'Link copied');
   });
 

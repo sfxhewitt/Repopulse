@@ -1,5 +1,5 @@
 /* RepoPulse service worker: the app shell works offline; API calls are never cached here. */
-const VERSION = 'repopulse-v1';
+const VERSION = 'repopulse-v2';
 const SHELL = [
   './', 'index.html', 'assets/app.css', 'js/app.js', 'js/cockpit.js',
   'vendor/lucide.min.js', 'vendor/marked.min.js', 'vendor/purify.min.js',

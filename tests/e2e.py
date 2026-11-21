@@ -52,6 +52,7 @@ def gql_response():
         "repositories": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [gql_repo(*n) for n in NAMES]}}}}
 
 CALLS = []
+ASKS = []
 async def handle(route):
     req = route.request
     u = req.url
@@ -84,6 +85,7 @@ async def handle(route):
         body = json.loads(req.post_data)
         assert req.headers.get('anthropic-dangerous-direct-browser-access') == 'true'
         assert 'hq' in body['messages'][0]['content']
+        ASKS.append([m['role'] for m in body['messages']])
         return await route.fulfill(json={"content": [{"type": "text", "text": "**old-thing** has had no pushes for over a year."}]}, headers=hdr)
     await route.abort()
 
@@ -177,6 +179,11 @@ async def main():
         await pg.keyboard.press('Escape'); await pg.evaluate('document.activeElement.blur()'); await pg.keyboard.press('6')
         await pg.fill('#askKey', 'sk-ant-test'); await pg.fill('#askQuestion', 'Which projects have I neglected?'); await pg.click('#askForm button[type=submit]'); await pg.wait_for_timeout(500)
         check('live: ask shows the answer', 'no pushes for over a year' in await txt(pg, '#view-ask'), await txt(pg, '#view-ask'))
+        await pg.fill('#askQuestion', 'Should I archive it?'); await pg.click('#askForm button[type=submit]'); await pg.wait_for_timeout(500)
+        check('live: follow-up sends the earlier turn too', ASKS[-1] == ['user', 'assistant', 'user'], ASKS)
+        check('live: thread shows both questions', 'Which projects have I neglected?' in await txt(pg, '#askThread') and 'Should I archive it?' in await txt(pg, '#askThread'))
+        await pg.click('[data-act="ask-reset"]')
+        check('live: start over clears the thread', await txt(pg, '#askThread') == '')
         await pg.screenshot(path=f'{SHOTS}/desk-ask.png')
         await pg.evaluate('document.activeElement.blur()'); await pg.keyboard.press('1')
         await pg.click('#shareCardBtn'); await pg.wait_for_timeout(900)
