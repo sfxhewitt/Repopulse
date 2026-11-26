@@ -75,6 +75,7 @@ def runs_response(u):
                                    "html_url": "https://github.com/sfxhewitt/stock-watch/actions/runs/78", "created_at": hours(4), "display_title": "tests"}]}
     return {"workflow_runs": []}
 
+GH = {'mode': 'ok'}  # ok | badtoken (every call answers 401) | down (no call gets through) | gqldown (GraphQL answers 502)
 CALLS = []
 ASKS = []
 async def handle(route):
@@ -83,11 +84,17 @@ async def handle(route):
     hdr = {"access-control-allow-origin": "*", "access-control-expose-headers": "*", "x-ratelimit-remaining": "4990", "x-ratelimit-limit": "5000", "x-ratelimit-reset": "1795300000"}
     if u.startswith(BASE):
         return await route.continue_()
+    if 'api.github.com' in u and GH['mode'] == 'down':
+        return await route.abort()
+    if 'api.github.com' in u and GH['mode'] == 'badtoken' and req.method != 'OPTIONS':
+        return await route.fulfill(status=401, json={"message": "Bad credentials"}, headers=hdr)
     if req.method == 'OPTIONS':
         return await route.fulfill(status=204, headers={**hdr, "access-control-allow-headers": "*", "access-control-allow-methods": "*"})
     if 'api.github.com' in u or 'api.anthropic.com' in u:
         CALLS.append(f"{req.method} {u.split('.com')[1].split('?')[0]}")
     if u == 'https://api.github.com/graphql':
+        if GH['mode'] == 'gqldown':
+            return await route.fulfill(status=502, json={"message": "Server Error"}, headers=hdr)
         query = json.loads(req.post_data)['query']
         if 'query Digest' in query:
             CALLS[-1] = 'POST /graphql#digest'
@@ -292,6 +299,45 @@ async def main():
         check('link: digest saved for offline', await pg.evaluate("Boolean(localStorage.getItem('repopulse_digest_v1:sfxhewitt'))"))
         await pg.screenshot(path=f'{SHOTS}/phone-digest-live.png', full_page=True)
         check('link: digest no page errors', not pg.errs, pg.errs)
+        await pg.context.close()
+
+        # ---- the saved copy, when a refresh can't happen: say why ----
+        store = {'repopulse_github_pat': 'ghp_test', 'repopulse_last_username': 'sfxhewitt'}
+        pg = await new_page(b, 390, 844, store, '?view=attention')
+        check('stale: no notice while GitHub answers', await pg.locator('[data-stale]').count() == 0)
+        await pg.click('.nav-bottom[data-nav="shipped"]'); await pg.click('[data-ship-range="1"]'); await pg.wait_for_selector('#view-shipped[data-digest-status="ready"]')
+        await pg.goto(BASE + '?view=attention'); await pg.wait_for_timeout(1200)
+        GH['mode'] = 'badtoken'
+        await pg.reload(); await pg.wait_for_timeout(1200)
+        note = await txt(pg, '#view-attention [data-stale="token"]')
+        check('stale: an expired token is named on Needs you', 'This is the copy saved' in note and 'rejected your token' in note and 'Update token' in note, note)
+        check('stale: the saved list is still there', 'Design critique fixes' in await txt(pg, '#view-attention'))
+        check('stale: notice fits the phone', await pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
+        await pg.screenshot(path=f'{SHOTS}/phone-stale-token.png')
+        await pg.click('.nav-bottom[data-nav="pulse"]')
+        check('stale: Pulse says so too', await pg.locator('#pulseHero [data-stale="token"]').count() == 1)
+        await pg.screenshot(path=f'{SHOTS}/phone-stale-pulse.png')
+        await pg.click('#pulseHero [data-stale] [data-act="token"]'); await pg.wait_for_timeout(300)
+        check('stale: Update token opens the token box', await pg.evaluate("!document.getElementById('authModalRoot').classList.contains('hidden')"))
+        GH['mode'] = 'down'
+        await pg.reload(); await pg.wait_for_timeout(1200)
+        await pg.click('.nav-bottom[data-nav="shipped"]'); await pg.click('[data-ship-range="1"]'); await pg.wait_for_timeout(600)
+        note = await txt(pg, '#view-shipped [data-stale="offline"]')
+        check('stale: offline is named on the digest, once', "couldn't be reached" in note and "Couldn't refresh:" not in await txt(pg, '#view-shipped'), await txt(pg, '#view-shipped'))
+        check('stale: the saved digest is still there', (await txt(pg, '#digestSummary')).startswith('3 merges'), await txt(pg, '#digestSummary'))
+        await pg.screenshot(path=f'{SHOTS}/phone-stale-offline.png')
+        GH['mode'] = 'ok'
+        await pg.click('#view-shipped [data-stale] [data-act="reload"]'); await pg.wait_for_timeout(1500)
+        check('stale: Try again clears the notice once GitHub answers', await pg.locator('[data-stale]').count() == 0)
+        check('stale: no page errors', not pg.errs, pg.errs)
+        await pg.context.close()
+        # nothing saved and the activity query fails: the panel offers a way out
+        GH['mode'] = 'gqldown'
+        pg = await new_page(b, 390, 844, store, '?view=attention')
+        check('stale: with nothing saved, the error has a Try again button', "Couldn't load this" in await txt(pg, '#view-attention') and await pg.locator('#view-attention [data-act="reload"]').count() == 1, await txt(pg, '#view-attention'))
+        GH['mode'] = 'ok'
+        await pg.click('#view-attention [data-act="reload"]'); await pg.wait_for_timeout(1500)
+        check('stale: and it loads once GitHub answers', 'to deal with' in await txt(pg, '#view-attention h1'), await txt(pg, '#view-attention'))
         await pg.context.close()
         await b.close()
     print('\nFAILED: ' + ', '.join(FAIL) if FAIL else '\nALL PASSED')
