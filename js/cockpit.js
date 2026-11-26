@@ -138,6 +138,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       });
       const user = json.data && json.data.user;
       if (!user) {
+        if ((json.errors || []).some((e) => e.type === 'RATE_LIMITED')) throw fail('rate', "GitHub's rate limit has run out. Try again in a little while."); // GraphQL can say so with a 200
         if ((json.errors || []).some((e) => e.type === 'NOT_FOUND')) {
           const err = new Error('unsupported');
           err.unsupported = true;

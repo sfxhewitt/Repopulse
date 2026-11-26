@@ -75,7 +75,7 @@ def runs_response(u):
                                    "html_url": "https://github.com/sfxhewitt/stock-watch/actions/runs/78", "created_at": hours(4), "display_title": "tests"}]}
     return {"workflow_runs": []}
 
-GH = {'mode': 'ok'}  # ok | badtoken (every call answers 401) | down (no call gets through) | gqldown (GraphQL answers 502)
+GH = {'mode': 'ok'}  # ok | badtoken (every call answers 401) | down (no call gets through) | gqldown (GraphQL answers 502) | gqlrate (GraphQL says RATE_LIMITED with a 200)
 CALLS = []
 ASKS = []
 async def handle(route):
@@ -95,6 +95,8 @@ async def handle(route):
     if u == 'https://api.github.com/graphql':
         if GH['mode'] == 'gqldown':
             return await route.fulfill(status=502, json={"message": "Server Error"}, headers=hdr)
+        if GH['mode'] == 'gqlrate' and 'query Digest' not in req.post_data:
+            return await route.fulfill(json={"data": None, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded for user ID 1."}]}, headers=hdr)
         query = json.loads(req.post_data)['query']
         if 'query Digest' in query:
             CALLS[-1] = 'POST /graphql#digest'
@@ -329,6 +331,13 @@ async def main():
         GH['mode'] = 'ok'
         await pg.click('#view-shipped [data-stale] [data-act="reload"]'); await pg.wait_for_timeout(1500)
         check('stale: Try again clears the notice once GitHub answers', await pg.locator('[data-stale]').count() == 0)
+        GH['mode'] = 'gqlrate'
+        await pg.reload(); await pg.wait_for_timeout(1200)
+        note = await txt(pg, '#view-shipped [data-stale="rate"]')
+        check('stale: a GraphQL rate limit is named as one', 'rate limit has run out' in note and 'Try again' in note, await txt(pg, '#view-shipped'))
+        GH['mode'] = 'ok'
+        await pg.click('#view-shipped [data-stale] [data-act="reload"]'); await pg.wait_for_timeout(1500)
+        check('stale: and clears once GitHub answers', await pg.locator('[data-stale]').count() == 0)
         check('stale: no page errors', not pg.errs, pg.errs)
         await pg.context.close()
         # nothing saved and the activity query fails: the panel offers a way out
