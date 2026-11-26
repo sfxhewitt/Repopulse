@@ -13,10 +13,15 @@
 
   const VIEWS = ['pulse', 'attention', 'shipped', 'repos', 'compare', 'ask'];
   const VIEW_LABELS = { pulse: 'Pulse', attention: 'Needs you', shipped: 'Shipped', repos: 'Repos', compare: 'Compare', ask: 'Ask' };
-  const KEYS = { COCKPIT: 'repopulse_cockpit_v1', ANTHROPIC: 'repopulse_anthropic_key', MODEL: 'repopulse_anthropic_model' };
+  const KEYS = { COCKPIT: 'repopulse_cockpit_v1', DIGEST: 'repopulse_digest_v1', RANGE: 'repopulse_ship_range', ANTHROPIC: 'repopulse_anthropic_key', MODEL: 'repopulse_anthropic_model' };
+  const Digest = window.RPDigest;
+  const RANGES = [1, 7, 30]; // 1 is the 24-hour digest
+  const savedRange = () => {
+    try { return Number(localStorage.getItem(KEYS.RANGE)); } catch { return 0; }
+  };
 
   // status: demo | locked (no token) | loading | ready | error | unsupported (organisation)
-  const C = { view: 'pulse', data: null, status: 'loading', error: '', run: 0, shipRange: 7, compare: null, ask: { busy: false, error: '', pending: '', turns: [] } };
+  const C = { view: 'pulse', data: null, status: 'loading', error: '', run: 0, shipRange: RANGES.includes(savedRange()) ? savedRange() : 7, digest: { raw: null, status: 'idle', error: '', run: 0, owner: null }, compare: null, ask: { busy: false, error: '', pending: '', turns: [] } };
 
   /* =====================================================================
    * 1. Data: one GraphQL query per 20 repos
@@ -352,7 +357,25 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       else el.removeAttribute('aria-current');
     });
     if (!opts.keepScroll) window.scrollTo(0, 0);
+    if (view === 'shipped' && C.shipRange === 1) ensureDigest();
     syncUrl();
+  }
+
+  function setShipRange(n) {
+    C.shipRange = RANGES.includes(n) ? n : 7;
+    try { localStorage.setItem(KEYS.RANGE, String(C.shipRange)); } catch { /* private mode */ }
+    if (C.shipRange === 1) ensureDigest();
+    renderShipped();
+    icons();
+    syncUrl();
+  }
+
+  function openDigest() {
+    C.shipRange = 1;
+    try { localStorage.setItem(KEYS.RANGE, '1'); } catch { /* private mode */ }
+    showView('shipped');
+    renderShipped();
+    icons();
   }
 
   function syncUrl() {
@@ -360,6 +383,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     const p = new URLSearchParams();
     if (S.mode === 'live' && S.username) p.set('user', S.username);
     if (C.view !== 'pulse') p.set('view', C.view);
+    if (C.view === 'shipped' && C.shipRange === 1) p.set('range', '24h');
     if (C.view === 'compare' && C.compare && C.compare.a && C.compare.b) p.set('compare', `${C.compare.a},${C.compare.b}`);
     const qs = p.toString();
     history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : ''));
@@ -412,6 +436,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       sub = week.length ? `${plural(week.length, 'commit')} across ${plural(repoCount, 'repo')} this week.` : 'No commits on a default branch this week.';
       if (st && st.current > 1) sub += ` ${st.current}-day streak.`;
       cta = urgent ? `<button type="button" data-nav-go="attention" class="btn btn-accent h-9 px-4 text-sm">See what needs you</button>` : `<button type="button" data-nav-go="shipped" class="btn btn-quiet h-9 px-4 text-sm">See what you shipped</button>`;
+      cta += `<button type="button" data-act="digest-open" class="btn btn-quiet h-9 px-4 text-sm"><i data-lucide="sunrise" class="w-3.5 h-3.5"></i>Last 24 hours</button>`;
     } else if (C.status === 'loading') {
       headline = 'Reading your repos…';
       sub = 'Pull requests, checks and commits are on their way.';
@@ -440,7 +465,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
         <div class="relative px-5 sm:px-7 pb-6 -mt-1">
           <h1 class="font-display font-bold tracking-tight text-[2rem] leading-[1.05] sm:text-5xl text-zinc-900 dark:text-zinc-50">${h(headline)}</h1>
           <p class="text-sm sm:text-base text-zinc-700 dark:text-zinc-300 mt-2 max-w-2xl">${h(sub)}</p>
-          ${cta ? `<div class="mt-4">${cta}</div>` : ''}
+          ${cta ? `<div class="mt-4 flex flex-wrap gap-2">${cta}</div>` : ''}
           ${days.length ? `<p class="text-xs text-zinc-500 dark:text-zinc-400 mt-4">The trace is your last ${Math.round(days.length / 30)} months on GitHub, one beat per active day.</p>` : ''}
         </div>
       </div>`;
@@ -581,9 +606,15 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
   }
 
+  function rangeButtons() {
+    const range = (n, label) => `<button type="button" data-ship-range="${n}" aria-pressed="${C.shipRange === n}" class="btn ${C.shipRange === n ? 'btn-accent' : 'btn-quiet'}">${label}</button>`;
+    return `<div class="flex items-center gap-2">${range(1, '24 hours')}${range(7, '7 days')}${range(30, '30 days')}</div>`;
+  }
+
   function renderShipped() {
     const el = $('view-shipped');
     if (!C.data) return void (el.innerHTML = lockedPanel('The ship log'));
+    if (C.shipRange === 1) return void renderDigest(el);
     const commits = allCommits(C.shipRange);
     const repoCount = new Set(commits.map((c) => c.repo.full_name)).size;
     const groups = [];
@@ -595,14 +626,13 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     const perRepo = {};
     commits.forEach((c) => (perRepo[c.repo.name] = (perRepo[c.repo.name] || 0) + 1));
     const top = Object.entries(perRepo).sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const range = (n, label) => `<button type="button" data-ship-range="${n}" class="btn ${C.shipRange === n ? 'btn-accent' : 'btn-quiet'}">${label}</button>`;
     el.innerHTML = `
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 class="font-display font-bold tracking-tight text-3xl sm:text-4xl">${commits.length ? `${plural(commits.length, 'commit')} across ${plural(repoCount, 'repo')}` : 'Nothing shipped'}</h1>
           <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">Commits that reached a default branch in the last ${C.shipRange} days${top.length ? `: ${top.map(([n, c]) => `${h(n)} ${c}`).join(', ')}` : ''}.</p>
         </div>
-        <div class="flex items-center gap-2">${range(7, '7 days')}${range(30, '30 days')}</div>
+        ${rangeButtons()}
       </div>
       ${groups
         .map(
@@ -626,6 +656,216 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
         </section>`
         )
         .join('')}`;
+  }
+
+  /* ---- What shipped: the last 24 hours ---------------------------------- */
+  const DIGEST_FRESH = 5 * 60000;
+
+  function loadSavedDigest(login) {
+    try {
+      return JSON.parse(localStorage.getItem(`${KEYS.DIGEST}:${login.toLowerCase()}`) || 'null');
+    } catch {
+      return null;
+    }
+  }
+
+  function buildDemoDigest() {
+    const now = Date.now();
+    const ago = (hours) => new Date(now - hours * 3600000).toISOString();
+    const named = ['vortex-sync', 'cmdk-studio', 'prompt-eval-kit', 'hypertrace-rs'];
+    const pick = (i) => S.repos.find((r) => r.name === named[i]) || S.repos[i % Math.max(1, S.repos.length)] || { full_name: 'demo/repo', html_url: '#' };
+    const broken = pick(3);
+    const pr = (i, number, title, hours) => ({ repo: pick(i).full_name, number, title, url: `${pick(i).html_url}/pull/${number}`, at: ago(hours), author: 'alexrivera-dev' });
+    const run = (repo, id, name, conclusion, hours) => ({ repo: repo.full_name, id, workflowId: name, name, branch: repo.default_branch || 'main', event: 'push', status: 'completed', conclusion, url: `${repo.html_url}/actions`, at: ago(hours), title: '' });
+    return {
+      login: S.username, hours: 24, fetchedAt: now, since: ago(24), checked: S.repos.length, skipped: 0, rateLimited: false, rateLimitedUntil: null, mergedMore: 0, open: null,
+      merged: [pr(0, 214, 'Resume sync after a dropped connection', 3), pr(0, 213, 'Trim snapshot size by a third', 9), pr(1, 90, 'Keyboard hints in the action panel', 5), pr(2, 55, 'Cache eval runs between sessions', 14)],
+      deploys: [
+        { repo: pick(0).full_name, environment: 'github-pages', at: ago(2.9), outcome: 'ok', url: pick(0).html_url },
+        { repo: pick(0).full_name, environment: 'github-pages', at: ago(8.9), outcome: 'ok', url: pick(0).html_url },
+        { repo: pick(1).full_name, environment: 'production', at: ago(4.8), outcome: 'ok', url: pick(1).html_url },
+      ],
+      runs: [run(broken, 1, 'CI', 'failure', 6), run(pick(2), 2, 'tests', 'failure', 15), run(pick(2), 3, 'tests', 'success', 13.5)],
+      unchecked: { merged: '', open: '', deploys: [], runs: [] },
+    };
+  }
+
+  function digestOpenPrs() {
+    const g = buildAttention();
+    const item = (ready) => (it) => ({
+      repo: it.repo.full_name, number: it.pr.number, title: it.pr.title, url: it.pr.url, createdAt: it.pr.createdAt, author: it.pr.author,
+      note: it.note, ready, canPush: it.ex.canPush,
+    });
+    return [...g.ready.map(item(true)), ...g.blocked.map(item(false))];
+  }
+
+  const digestModel = () => (C.digest.raw ? Digest.summarise(C.digest.raw, digestOpenPrs(), { now: Date.now() }) : null);
+  const digestShowing = () => C.view === 'shipped' && C.shipRange === 1;
+
+  function ensureDigest(force) {
+    const D = C.digest;
+    if (!C.data) return; // locked, loading or failed: the view already says so
+    if (S.mode === 'demo') {
+      D.run++;
+      D.raw = buildDemoDigest();
+      D.owner = 'demo';
+      D.status = 'ready';
+      D.error = '';
+      return;
+    }
+    const login = S.username;
+    if (D.owner !== login.toLowerCase()) {
+      D.run++;
+      D.raw = loadSavedDigest(login);
+      D.owner = login.toLowerCase();
+      D.status = D.raw ? 'ready' : 'idle';
+      D.error = '';
+    }
+    const fresh = D.raw && Date.now() - D.raw.fetchedAt < DIGEST_FRESH;
+    if (D.status === 'loading' || (fresh && !force) || !S.token) return;
+    const run = ++D.run;
+    D.status = 'loading';
+    D.error = '';
+    Digest.fetchDigest({
+      login,
+      repos: S.repos,
+      rest: RP.githubFetch,
+      graphql: (query, variables) =>
+        fetch('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables }),
+        }),
+    })
+      .then((raw) => {
+        if (run !== D.run) return;
+        D.raw = raw;
+        try {
+          localStorage.setItem(`${KEYS.DIGEST}:${login.toLowerCase()}`, JSON.stringify(raw));
+        } catch (err) {
+          console.warn('Could not save the digest:', err);
+        }
+      })
+      .catch((err) => {
+        if (run !== D.run) return;
+        D.error = err.message === 'Failed to fetch' ? "The request didn't reach GitHub. Check your connection." : err.message;
+      })
+      .finally(() => {
+        if (run !== D.run) return;
+        D.status = D.raw ? 'ready' : 'error';
+        if (digestShowing()) {
+          renderShipped();
+          icons();
+        }
+      });
+  }
+
+  async function copyDigest() {
+    const model = digestModel();
+    if (!model) return void RP.showToast('Nothing to copy yet', 'error');
+    try {
+      await navigator.clipboard.writeText(model.text);
+      RP.showToast('Summary copied', 'success');
+    } catch {
+      RP.copyToClipboard(model.text, 'Summary copied'); // older browsers, or no clipboard permission
+    }
+  }
+
+  function renderDigest(el) {
+    const D = C.digest;
+    const model = digestModel();
+    const head = (title, sub) => `
+      <div class="flex flex-wrap items-end justify-between gap-3">
+        <div class="min-w-0">
+          <h1 class="font-display font-bold tracking-tight text-3xl sm:text-4xl">${h(title)}</h1>
+          <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">${sub}</p>
+        </div>
+        ${rangeButtons()}
+      </div>`;
+    el.setAttribute('data-digest-status', model ? (D.status === 'loading' ? 'refreshing' : 'ready') : D.status);
+    if (!model) {
+      const body = D.status === 'error'
+        ? `<div class="panel p-6"><p class="text-sm font-medium text-rose-600 dark:text-rose-300">Couldn't load the last 24 hours.</p><p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">${h(D.error)}</p><button type="button" data-act="digest-refresh" class="btn btn-quiet h-10 sm:h-9 px-4 mt-4"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Try again</button></div>`
+        : `<div class="panel p-8 text-sm text-zinc-500 dark:text-zinc-400">Reading merges, deploys and workflow runs from GitHub…</div>`;
+      el.innerHTML = head('What shipped', 'Merged pull requests, deploys and failed runs from the last 24 hours.') + body;
+      return;
+    }
+
+    const clock = (iso) => {
+      const t = new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return dayLabel(iso) === 'Today' ? t : `${dayLabel(iso) === 'Yesterday' ? 'Yesterday' : RP.formatShortDate(iso)} ${t}`;
+    };
+    const at = (iso) => `<span class="text-xs font-mono tabular-nums text-zinc-500 dark:text-zinc-400 shrink-0 whitespace-nowrap">${h(clock(iso))}</span>`;
+    const mark = (icon, tone) => `<i data-lucide="${icon}" class="w-4 h-4 mt-0.5 shrink-0 ${tone}"></i>`;
+    const RED = 'text-rose-600 dark:text-rose-400', AMBER = 'text-amber-600 dark:text-amber-400', BLUE = 'text-indigo-600 dark:text-indigo-300', GREEN = 'text-emerald-600 dark:text-emerald-400';
+    const name = (nwo) => {
+      const repo = findRepo(nwo);
+      return repo ? repoLink(repo) : `<span class="font-mono text-xs text-zinc-500 dark:text-zinc-400">${h(Digest.shortName(nwo))}</span>`;
+    };
+    const sub = (html) => `<p class="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">${html}</p>`;
+    const open = (url, label = 'Open') => `<a href="${h(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-quiet h-10 sm:h-8 px-4 sm:px-3">${label}</a>`;
+    const needRow = (it) => {
+      if (it.kind === 'run') {
+        return row(
+          `<div class="flex gap-2.5 min-w-0">${mark('circle-x', RED)}<div class="min-w-0"><p class="text-sm font-medium break-words">${h(it.name)} failed</p>${sub(`${name(it.repo)}${it.branch ? ` on ${h(it.branch)}` : ''}, ${h(clock(it.at))}${it.count > 1 ? `, ${it.count} times` : ''}${it.retrying ? '. Running again now' : ''}.`)}</div></div>`,
+          open(it.url, 'Open run')
+        );
+      }
+      if (it.kind === 'deploy') {
+        return row(
+          `<div class="flex gap-2.5 min-w-0">${mark('cloud-off', RED)}<div class="min-w-0"><p class="text-sm font-medium break-words">${it.pages ? 'Pages build' : `Deploy to ${h(it.environment)}`} failed</p>${sub(`${name(it.repo)}, ${h(clock(it.at))}.`)}</div></div>`,
+          open(it.url)
+        );
+      }
+      return row(
+        `<div class="flex gap-2.5 min-w-0">${mark('git-pull-request', AMBER)}<div class="min-w-0"><a href="${h(it.url)}" target="_blank" rel="noopener noreferrer" class="text-sm font-medium hover:underline break-words">${h(it.title)}</a>${sub(`${name(it.repo)} #${it.number} by ${h(it.author)}, opened ${RP.formatRelativeTime(it.createdAt)}.${it.note ? ` ${h(it.note)}.` : ''}`)}</div></div>`,
+        (it.ready && it.canPush ? `<button type="button" data-act="merge" data-repo="${h(it.repo)}" data-num="${it.number}" class="btn btn-accent h-10 sm:h-8 px-4 sm:px-3"><i data-lucide="git-merge" class="w-3.5 h-3.5"></i>Merge</button>` : '') + open(it.url)
+      );
+    };
+    const line = (icon, tone, main, when) => `<li class="px-4 py-2.5 flex items-start justify-between gap-3"><div class="flex gap-2.5 min-w-0">${mark(icon, tone)}<div class="min-w-0">${main}</div></div>${at(when)}</li>`;
+    const repoPanel = (g) => {
+      const tally = [g.merged.length ? `${g.merged.length} merged` : '', g.deploys.length ? plural(g.deploys.reduce((n, d) => n + d.count, 0), 'deploy') : ''].filter(Boolean).join(' · ');
+      const repo = findRepo(g.repo);
+      return `
+        <section class="panel overflow-hidden">
+          <header class="px-4 py-2.5 border-b border-zinc-200 dark:border-white/[0.08] flex items-baseline justify-between gap-3">
+            <h2 class="font-display font-bold text-base truncate">${repo ? `<button type="button" data-open-repo="${h(repo.full_name)}" class="hover:text-indigo-600 dark:hover:text-indigo-300">${h(g.name)}</button>` : h(g.name)}</h2>
+            <span class="text-xs font-mono text-zinc-500 shrink-0">${tally}</span>
+          </header>
+          <ul class="divide-y divide-zinc-100 dark:divide-white/[0.05]">
+            ${g.merged.map((m) => line('git-merge', BLUE, `<a href="${h(m.url)}" target="_blank" rel="noopener noreferrer" class="text-sm hover:underline break-words">${h(m.title)}</a>${sub(`#${m.number} by ${h(m.author)}`)}`, m.at)).join('')}
+            ${g.deploys.map((d) => line(d.pages ? 'globe' : 'rocket', d.outcome === 'running' ? AMBER : GREEN, `<a href="${h(d.url)}" target="_blank" rel="noopener noreferrer" class="text-sm hover:underline break-words">${d.pages ? 'Pages build' : `Deployed to ${h(d.environment)}`}${d.count > 1 ? ` <span class="font-mono text-xs text-zinc-500">×${d.count}</span>` : ''}</a>${sub(d.outcome === 'running' ? 'Still in progress' : d.pages ? 'Published to GitHub Pages' : 'Went out cleanly')}`, d.at)).join('')}
+            ${g.recovered.map((r) => line('circle-check', GREEN, `<a href="${h(r.url)}" target="_blank" rel="noopener noreferrer" class="text-sm hover:underline break-words">${h(r.name)} failed, then passed</a>${sub(`${r.branch ? `On ${h(r.branch)}. ` : ''}Nothing to do.`)}`, r.at)).join('')}
+          </ul>
+        </section>`;
+    };
+
+    const notes = model.gaps.slice();
+    if (D.error) notes.unshift(`Couldn't refresh: ${D.error}`);
+    if (S.mode === 'demo') notes.push('Sample data. Buttons here change nothing.');
+    const checked = model.fetchedAt ? ` Checked ${RP.formatRelativeTime(new Date(model.fetchedAt).toISOString())}.` : '';
+    const busy = D.status === 'loading';
+
+    el.innerHTML = `
+      ${head(model.headline, `Merged pull requests, deploys and failed runs since ${h(clock(new Date(model.from).toISOString()).replace(/^Yesterday/, 'yesterday'))}.${checked}`)}
+      <section class="panel p-4" aria-label="Summary">
+        <pre id="digestSummary" class="font-mono text-[13px] leading-relaxed whitespace-pre-wrap break-words">${h(model.text)}</pre>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          <button type="button" data-act="digest-copy" class="btn btn-accent h-10 sm:h-9 px-4"><i data-lucide="copy" class="w-3.5 h-3.5"></i>Copy summary</button>
+          <button type="button" data-act="digest-refresh" class="btn btn-quiet h-10 sm:h-9 px-4" ${busy ? 'disabled' : ''}><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>${busy ? 'Checking…' : 'Refresh'}</button>
+        </div>
+        ${notes.map((n) => `<p class="text-xs text-zinc-500 dark:text-zinc-400 mt-2">${h(n)}</p>`).join('')}
+      </section>
+      ${model.needsYou.length ? `
+      <section class="panel overflow-hidden" id="digestNeeds">
+        <header class="px-4 py-3 border-b border-zinc-200 dark:border-white/[0.08] flex items-baseline justify-between gap-3">
+          <h2 class="font-display font-bold text-lg tracking-tight">Needs you <span class="font-mono text-sm font-normal text-zinc-500">${model.needsYou.length}</span></h2>
+          <p class="hidden sm:block text-xs text-zinc-500 dark:text-zinc-400">Failed runs first, then pull requests still open</p>
+        </header>
+        <ul class="divide-y divide-zinc-100 dark:divide-white/[0.05]">${model.needsYou.map(needRow).join('')}</ul>
+      </section>` : ''}
+      ${model.repos.map(repoPanel).join('')}
+      ${model.quiet ? `<div class="panel p-6 text-sm text-zinc-600 dark:text-zinc-400">Nothing was merged or deployed, no runs failed and no pull requests are waiting.</div>` : !model.repos.length ? `<div class="panel p-6 text-sm text-zinc-600 dark:text-zinc-400">Nothing was merged or deployed in the last 24 hours.</div>` : ''}`;
   }
 
   /* ---- Compare ---------------------------------------------------------- */
@@ -960,6 +1200,8 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
   function paletteItems() {
     const items = VIEWS.map((v, i) => ({ label: `Go to ${VIEW_LABELS[v]}`, hint: String(i + 1), icon: 'arrow-right', run: () => showView(v) }));
     const cmd = (label, icon, run) => items.push({ label, icon, hint: '', run });
+    cmd('What shipped in the last 24 hours', 'sunrise', openDigest);
+    cmd('Copy the 24-hour summary', 'copy', () => { ensureDigest(); copyDigest(); });
     cmd('Load another username', 'user', () => { const i = $('usernameInput'); i.focus(); i.select(); });
     cmd(S.token ? 'Change or remove GitHub token' : 'Add GitHub token', 'key-round', RP.openAuthModal);
     cmd('Refresh from GitHub', 'refresh-cw', () => $('refreshDataBtn').click());
@@ -1256,7 +1498,9 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       const params = new URLSearchParams(location.search);
       const view = params.get('view');
       const cmp = (params.get('compare') || '').split(',').map((x) => x.trim()).filter(Boolean);
-      showView(cmp.length === 2 ? 'compare' : view || 'pulse', { keepScroll: true });
+      if (view === 'digest' || params.get('range') === '24h') C.shipRange = 1; // ?view=digest is shorthand for the 24-hour ship log
+      else if (view === 'shipped' && params.get('range')) C.shipRange = RANGES.includes(parseInt(params.get('range'), 10)) ? parseInt(params.get('range'), 10) : C.shipRange;
+      showView(cmp.length === 2 ? 'compare' : view === 'digest' ? 'shipped' : view || 'pulse', { keepScroll: true });
       if (cmp.length === 2) runCompare(cmp[0], cmp[1]);
     },
     onUserChange(login) {
@@ -1292,11 +1536,13 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
           })
           .finally(() => {
             if (run !== C.run) return;
+            if (digestShowing()) ensureDigest();
             RP.applyFiltersAndRender();
             renderViews();
           });
       }
       if (C.data) RP.applyFiltersAndRender(); // health badges need the cockpit data
+      if (digestShowing()) ensureDigest(true);
       renderViews();
       syncUrl();
     },
@@ -1352,11 +1598,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       return;
     }
     const range = e.target.closest('[data-ship-range]');
-    if (range) {
-      C.shipRange = Number(range.getAttribute('data-ship-range'));
-      renderShipped();
-      return void icons();
-    }
+    if (range) return void setShipRange(Number(range.getAttribute('data-ship-range')));
     const suggest = e.target.closest('[data-ask-suggest]');
     if (suggest) {
       $('askQuestion').value = suggest.getAttribute('data-ask-suggest');
@@ -1371,6 +1613,9 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     else if (kind === 'rerun') rerunCI(nwo);
     else if (kind === 'archive') archiveRepo(nwo);
     else if (kind === 'ask-reset') { C.ask = { busy: false, error: '', pending: '', turns: [] }; renderAsk(); }
+    else if (kind === 'digest-open') openDigest();
+    else if (kind === 'digest-copy') copyDigest();
+    else if (kind === 'digest-refresh') { ensureDigest(true); renderShipped(); icons(); }
     else if (kind === 'copy-compare') RP.copyToClipboard(location.href, 'Link copied');
   });
 
