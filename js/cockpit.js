@@ -113,14 +113,24 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     const since = new Date(Date.now() - 30 * DAY).toISOString();
     const out = { login, fetchedAt: Date.now(), viewer: null, calendar: null, repos: {}, warnings: [] };
     let cursor = null;
+    // kind says why a refresh failed (token | offline | rate), so the page can say so next to the saved copy
+    const fail = (kind, message) => Object.assign(new Error(message), { kind });
     for (let page = 0; page < 10; page++) {
-      const res = await fetch('https://api.github.com/graphql', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: QUERY, variables: { login, cursor, since, first: page === 0 } }),
-      });
-      if (res.status === 401) throw new Error('GitHub rejected the token. Update it under "Add token".');
-      if (!res.ok) throw new Error(`GitHub returned ${res.status} for the activity query.`);
+      let res;
+      try {
+        res = await fetch('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: QUERY, variables: { login, cursor, since, first: page === 0 } }),
+        });
+      } catch {
+        throw fail('offline', "The request didn't reach GitHub. Check your connection."); // Safari words this differently from Chrome
+      }
+      if (res.status === 401) throw fail('token', 'GitHub rejected the token. Update it under "Add token".');
+      if (res.status === 429 || (res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.get('retry-after') !== null))) {
+        throw fail('rate', "GitHub's rate limit has run out. Try again in a little while.");
+      }
+      if (!res.ok) throw fail('other', `GitHub returned ${res.status} for the activity query.`);
       const json = await res.json();
       (json.errors || []).forEach((e) => {
         const msg = /vulnerabilityAlerts/.test((e.path || []).join('.')) ? 'alerts' : e.message;
@@ -128,6 +138,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       });
       const user = json.data && json.data.user;
       if (!user) {
+        if ((json.errors || []).some((e) => e.type === 'RATE_LIMITED')) throw fail('rate', "GitHub's rate limit has run out. Try again in a little while."); // GraphQL can say so with a 200
         if ((json.errors || []).some((e) => e.type === 'NOT_FOUND')) {
           const err = new Error('unsupported');
           err.unsupported = true;
@@ -396,7 +407,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
   function lockedPanel(what) {
     if (C.status === 'loading') return `<div class="panel p-8 text-sm text-zinc-500 dark:text-zinc-400">Reading pull requests, checks and commits from GitHub…</div>`;
     if (C.status === 'error') {
-      return `<div class="panel p-6"><p class="text-sm font-medium text-rose-600 dark:text-rose-300">Couldn't load this.</p><p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">${h(C.error)}</p></div>`;
+      return `<div class="panel p-6"><p class="text-sm font-medium text-rose-600 dark:text-rose-300">Couldn't load this.</p><p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">${h(C.error)}</p>${C.errorKind === 'token' ? `<button type="button" data-act="token" class="btn btn-accent h-10 sm:h-9 px-4 mt-4">Update token</button>` : `<button type="button" data-act="reload" class="btn btn-quiet h-10 sm:h-9 px-4 mt-4"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Try again</button>`}</div>`;
     }
     if (C.status === 'unsupported') {
       return `<div class="panel p-6 text-sm text-zinc-600 dark:text-zinc-400">${h(what)} is available for personal accounts. @${h(S.username)} is an organisation.</div>`;
@@ -409,6 +420,24 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
   }
 
   /* ---- Pulse ------------------------------------------------------------ */
+  /* The saved copy is on screen because the last refresh failed: say so, say why, and offer the way out. */
+  function staleNotice() {
+    if (!C.stale || !C.data || S.mode !== 'live') return '';
+    const when = RP.formatRelativeTime(new Date(C.data.fetchedAt).toISOString());
+    const why = {
+      token: 'GitHub rejected your token. It may have expired or been removed.',
+      offline: "GitHub couldn't be reached. You may be offline.",
+      rate: "GitHub's rate limit has run out. It resets within the hour.",
+    }[C.stale.kind] || `GitHub couldn't be read. ${C.stale.message}`;
+    const button = C.stale.kind === 'token'
+      ? `<button type="button" data-act="token" class="btn btn-accent h-10 sm:h-9 px-4 shrink-0">Update token</button>`
+      : `<button type="button" data-act="reload" class="btn btn-quiet h-10 sm:h-9 px-4 shrink-0"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Try again</button>`;
+    return `<div role="status" data-stale="${h(C.stale.kind)}" class="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <p class="text-sm text-zinc-800 dark:text-zinc-200 min-w-0"><span class="font-medium">This is the copy saved ${h(when)}.</span> ${h(why)}</p>
+      ${button}
+    </div>`;
+  }
+
   function tracePath(days) {
     const step = 8, base = 68, max = Math.max(1, ...days.map((d) => d.count));
     let d = `M0 ${base}`;
@@ -484,7 +513,8 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
 
     const days = C.data && C.data.calendar ? C.data.calendar.days.slice(-180) : [];
     const t = tracePath(days.length ? days : Array.from({ length: 180 }, () => ({ count: 0 })));
-    hero.innerHTML = `
+    const stale = staleNotice();
+    hero.innerHTML = `${stale ? `<div class="mb-4">${stale}</div>` : ''}
       <div class="pulse-paper relative overflow-hidden rounded-xl border border-zinc-200 dark:border-white/[0.08]">
         <div class="relative h-24 sm:h-28" aria-hidden="true">
           <svg class="absolute right-6 top-0 h-full" width="${t.width}" viewBox="0 0 ${t.width} 96" preserveAspectRatio="xMaxYMid meet" fill="none">
@@ -623,6 +653,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
         <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-1">${urgent ? 'Pull requests, failing checks and alerts across every repo.' : 'No open pull requests, failing checks or alerts.'} Checked ${RP.formatRelativeTime(new Date(C.data.fetchedAt).toISOString())}.</p>
         ${notes.map((n) => `<p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1">${h(n)}</p>`).join('')}
       </div>
+      ${staleNotice()}
       ${parts || ''}`;
   }
 
@@ -872,13 +903,15 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     };
 
     const notes = model.gaps.slice();
-    if (D.error) notes.unshift(`Couldn't refresh: ${D.error}`);
+    const stale = staleNotice();
+    if (D.error && !stale) notes.unshift(`Couldn't refresh: ${D.error}`);
     if (S.mode === 'demo') notes.push('Sample data. Buttons here change nothing.');
     const checked = model.fetchedAt ? ` Checked ${RP.formatRelativeTime(new Date(model.fetchedAt).toISOString())}.` : '';
     const busy = D.status === 'loading';
 
     el.innerHTML = `
       ${head(model.headline, `Merged pull requests, deploys and failed runs since ${h(clock(new Date(model.from).toISOString()).replace(/^Yesterday/, 'yesterday'))}.${checked}`)}
+      ${stale}
       <section class="panel p-4" aria-label="Summary">
         <pre id="digestSummary" class="font-mono text-[13px] leading-relaxed whitespace-pre-wrap break-words">${h(model.text)}</pre>
         <div class="flex flex-wrap items-center gap-2 mt-3">
@@ -1545,25 +1578,33 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       if (S.mode === 'demo') {
         C.data = buildDemoCockpit();
         C.status = 'demo';
+        C.stale = null;
       } else if (!S.token) {
         C.data = null;
         C.status = 'locked';
+        C.stale = null;
       } else {
-        if (!C.data || C.data.login.toLowerCase() !== login.toLowerCase()) C.data = loadSavedCockpit(login);
+        if (!C.data || C.data.login.toLowerCase() !== login.toLowerCase()) {
+          C.data = loadSavedCockpit(login);
+          C.stale = null;
+        }
         C.status = C.data ? 'ready' : 'loading';
         fetchCockpit(login)
           .then((data) => {
             if (run !== C.run) return;
             C.data = data;
             C.status = 'ready';
+            C.stale = null;
             saveCockpit();
           })
           .catch((err) => {
             if (run !== C.run) return;
-            if (C.data && !err.unsupported) return void RP.showToast("Couldn't refresh pull requests and activity", 'error');
+            if (C.data && !err.unsupported) return void (C.stale = { kind: err.kind || 'other', message: err.message }); // every view says so until a refresh works
             C.data = null;
+            C.stale = null;
             C.status = err.unsupported ? 'unsupported' : 'error';
-            C.error = err.message === 'Failed to fetch' ? "The request didn't reach GitHub. Check your connection." : err.message;
+            C.error = err.message;
+            C.errorKind = err.kind || 'other';
           })
           .finally(() => {
             if (run !== C.run) return;
@@ -1641,6 +1682,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     const kind = act.getAttribute('data-act');
     const nwo = act.getAttribute('data-repo');
     if (kind === 'token') RP.openAuthModal();
+    else if (kind === 'reload') RP.fetchLiveUserAndRepos(S.username, { quiet: true });
     else if (kind === 'merge') mergePR(nwo, Number(act.getAttribute('data-num')));
     else if (kind === 'rerun') rerunCI(nwo);
     else if (kind === 'archive') archiveRepo(nwo);
@@ -1663,6 +1705,31 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       runAsk($('askQuestion').value);
     }
   });
+
+  /* ---- coming back to the app: an installed app is rarely reloaded, so check again when it's looked at ---- */
+  const RETURN_STALE = 5 * 60000; // how old the data may be before a return refreshes it
+  const RETURN_RETRY = 60000; // and how soon another attempt may follow one that started
+  const R = { busy: false, triedAt: 0 };
+
+  function refreshOnReturn() {
+    if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+    if (S.mode !== 'live' || !S.token || !S.username || R.busy) return;
+    if (!['pulse', 'attention', 'shipped'].includes(C.view)) return; // leave filters, a comparison or a half-typed question alone
+    if (C.status === 'loading' || C.status === 'unsupported') return;
+    const idle = ['inspectorDrawerRoot', 'authModalRoot'].every((id) => !$(id) || $(id).classList.contains('hidden'));
+    if (!idle || confirmResolve || paletteOpen() || cardOpen()) return; // not while something is open on top
+    const now = Date.now();
+    if (now - (C.data ? C.data.fetchedAt : 0) < RETURN_STALE || now - R.triedAt < RETURN_RETRY) return;
+    R.busy = true;
+    R.triedAt = now;
+    Promise.resolve(RP.fetchLiveUserAndRepos(S.username, { quiet: true }))
+      .catch(() => {})
+      .finally(() => (R.busy = false));
+  }
+
+  document.addEventListener('visibilitychange', refreshOnReturn);
+  window.addEventListener('pageshow', (e) => e.persisted && refreshOnReturn());
+  window.addEventListener('online', refreshOnReturn);
 
   document.addEventListener('DOMContentLoaded', () => {
     $('openPaletteBtn').addEventListener('click', openPalette);
