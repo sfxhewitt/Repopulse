@@ -75,7 +75,7 @@ def runs_response(u):
                                    "html_url": "https://github.com/sfxhewitt/stock-watch/actions/runs/78", "created_at": hours(4), "display_title": "tests"}]}
     return {"workflow_runs": []}
 
-GH = {'mode': 'ok'}  # ok | badtoken (every call answers 401) | down (no call gets through) | gqldown (GraphQL answers 502) | gqlrate (GraphQL says RATE_LIMITED with a 200)
+GH = {'mode': 'ok'}  # ok | badtoken (every call answers 401) | down (no call gets through) | gqldown (GraphQL answers 502) | gqlrate (GraphQL says RATE_LIMITED with a 200) | ratelimit (every call answers 403, limit spent)
 CALLS = []
 ASKS = []
 async def handle(route):
@@ -88,6 +88,8 @@ async def handle(route):
         return await route.abort()
     if 'api.github.com' in u and GH['mode'] == 'badtoken' and req.method != 'OPTIONS':
         return await route.fulfill(status=401, json={"message": "Bad credentials"}, headers=hdr)
+    if 'api.github.com' in u and GH['mode'] == 'ratelimit' and req.method != 'OPTIONS':
+        return await route.fulfill(status=403, json={"message": "API rate limit exceeded"}, headers={**hdr, "x-ratelimit-remaining": "0"})
     if req.method == 'OPTIONS':
         return await route.fulfill(status=204, headers={**hdr, "access-control-allow-headers": "*", "access-control-allow-methods": "*"})
     if 'api.github.com' in u or 'api.anthropic.com' in u:
@@ -166,6 +168,10 @@ async def main():
             await pg.screenshot(path=f'{SHOTS}/phone-{v}.png')
         check('demo: repo cards carry a health badge', await pg.locator('#repoGridContainer [title^="Health"]').count() >= 15)
         await pg.click('.nav-bottom[data-nav="pulse"]')
+        card = [t.strip() for t in (await pg.locator('#pulseDigest > span').all_text_contents())]
+        check('demo pulse: summary card shows two lines of the digest', len(card) == 3 and re.fullmatch(r'Last 24 hours, as of \d\d:\d\d', card[0]) and 'merges across' in card[1] and 'failed run' in card[2], card)
+        check('demo pulse: card is thumb-sized and fits the phone', await pg.evaluate("(() => { const r = document.getElementById('pulseDigest').getBoundingClientRect(); return r.height >= 44 && r.right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth; })()"))
+        await pg.screenshot(path=f'{SHOTS}/phone-pulse-digest.png')
         await pg.click('[data-act="digest-open"]'); await pg.wait_for_timeout(300)
         demo_lines = (await txt(pg, '#digestSummary')).split('\n')
         check('demo digest: Pulse button opens the 24-hour view with three lines', len(demo_lines) == 3 and 'merges across' in demo_lines[0] and 'failed run' in demo_lines[1] and 'waiting on you' in demo_lines[2], demo_lines)
@@ -194,6 +200,8 @@ async def main():
         check('live: hero says 4 things need you', head.startswith('4 things'), head)
         check('live: one GraphQL call', CALLS.count('POST /graphql') == 1, CALLS)
         check('live: nav badge shows 4', await txt(pg, '.nav-tab [data-attention-count]') == '4')
+        check('pulse: with no saved digest, a plain Last 24 hours button', await pg.locator('#pulseDigest').count() == 0 and (await txt(pg, '#pulseHero [data-pulse-digest]')).strip() == 'Last 24 hours')
+        check('pulse: reads nothing for the digest', not any(c == 'POST /graphql#digest' or c.endswith('/actions/runs') for c in CALLS), CALLS)
         await pg.screenshot(path=f'{SHOTS}/desk-pulse.png', full_page=True)
         await pg.keyboard.press('2')
         att = await txt(pg, '#view-attention')
@@ -242,6 +250,9 @@ async def main():
         DIGEST['mode'] = 'normal'
         await pg.click('[data-ship-range="7"]')
         check('digest: 7 days brings the commit log back', 'commits across' in await txt(pg, '#view-shipped h1'))
+        await pg.keyboard.press('1'); await pg.wait_for_timeout(200)
+        card = [t.strip() for t in (await pg.locator('#pulseDigest > span').all_text_contents())]
+        check('pulse: after the digest is read, the card shows its first two lines', len(card) == 3 and card[0].startswith('Last 24 hours, as of ') and card[1:] == ['Nothing merged or deployed in the last 24 hours', 'No failed runs'], card)
         await pg.keyboard.press('4'); await pg.keyboard.press('j'); await pg.keyboard.press('j'); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(600)
         check('live: j/j/Enter opens the second repo', await txt(pg, '#drawerRepoName') == 'plexodus', await txt(pg, '#drawerRepoName'))
         check('live: drawer shows health', 'Health' in await txt(pg, '#drawerHealth'))
@@ -374,6 +385,73 @@ async def main():
         await pg.click('#view-attention [data-act="reload"]'); await pg.wait_for_timeout(1500)
         check('stale: and it loads once GitHub answers', 'to deal with' in await txt(pg, '#view-attention h1'), await txt(pg, '#view-attention'))
         await pg.context.close()
+
+        # ---- opening Pulse costs the same as before the card: it only reads the digest saved in this browser ----
+        GH['mode'] = 'ok'
+        pg = await new_page(b, 390, 844, {'repopulse_github_pat': 'ghp_test', 'repopulse_last_username': 'sfxhewitt'}, '?view=digest')
+        await pg.wait_for_selector('#view-shipped[data-digest-status="ready"]', timeout=5000)
+        saved = await pg.evaluate("Object.fromEntries(Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)]))")
+        await pg.context.close()
+        DKEY = 'repopulse_digest_v1:sfxhewitt'
+        bare = {'repopulse_github_pat': 'ghp_test', 'repopulse_last_username': 'sfxhewitt'}
+        no_digest = {k: v for k, v in saved.items() if k != DKEY}
+        # requests made by opening Pulse, measured on main before the card (GitHub stubbed, 5 repos)
+        MAIN = {'first visit': 4, 'saved data, no digest': 5, 'saved data and digest': 5,
+                'rate-limited, no digest': 3, 'rate-limited, digest saved': 3, 'offline, no digest': 3, 'offline, digest saved': 3}
+        cases = [('first visit', 'ok', bare), ('saved data, no digest', 'ok', no_digest), ('saved data and digest', 'ok', saved),
+                 ('rate-limited, no digest', 'ratelimit', no_digest), ('rate-limited, digest saved', 'ratelimit', saved),
+                 ('offline, no digest', 'down', no_digest), ('offline, digest saved', 'down', saved)]
+        shots = {}
+        for name, mode, store in cases:
+            GH['mode'] = mode
+            ctx = await b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2)
+            pg = await ctx.new_page()
+            pg.errs = []
+            pg.on('pageerror', lambda e: pg.errs.append(str(e)))
+            reqs = []
+            pg.on('request', lambda r: reqs.append(r) if 'api.github.com' in r.url and r.method != 'OPTIONS' else None)
+            await pg.route('**/*', handle)
+            await pg.add_init_script(f"for (const [k,v] of Object.entries({json.dumps(store)})) if (!localStorage.getItem(k)) localStorage.setItem(k, v);")
+            await pg.goto(BASE); await pg.wait_for_timeout(1500)
+            digest_reqs = lambda: [r.url for r in reqs if 'created=' in r.url or 'query Digest' in (r.post_data or '')]
+            check(f'cost: opening Pulse ({name}) makes as many requests as main', len(reqs) == MAIN[name], f'{len(reqs)} vs {MAIN[name]}: ' + ', '.join(r.method + ' ' + r.url.split('.com')[1].split('?')[0] for r in reqs))
+            n = len(reqs)
+            for _ in range(3):
+                await pg.click('.nav-bottom[data-nav="repos"]'); await pg.click('.nav-bottom[data-nav="pulse"]')
+            await pg.evaluate("(() => { const real = Date.now; Date.now = () => real() + 6 * 60000; })()")
+            await pg.click('.nav-bottom[data-nav="repos"]'); await pg.click('.nav-bottom[data-nav="pulse"]'); await pg.wait_for_timeout(500)
+            check(f'cost: showing Pulse again, even after five minutes ({name}), makes no requests', len(reqs) == n, len(reqs) - n)
+            check(f'cost: no digest requests from Pulse ({name})', not digest_reqs(), digest_reqs())
+            has_card = await pg.locator('#pulseDigest').count() == 1
+            if store is saved and mode == 'ok':
+                card = [t.strip() for t in (await pg.locator('#pulseDigest > span').all_text_contents())]
+                want = await pg.evaluate(f"new Date(JSON.parse(localStorage.getItem('{DKEY}')).fetchedAt).toLocaleTimeString('en-GB', {{ hour: '2-digit', minute: '2-digit' }})")
+                check('pulse: saved digest shows its two lines and the time it was read', card == [f'Last 24 hours, as of {want}', '3 merges across 2 repos, 1 deploy', '1 failed run: stock-watch tests'], card)
+                check('pulse: a failed run is in red', 'text-rose-600' in (await pg.get_attribute('#pulseDigest > span:last-child', 'class')))
+                check('pulse: card is thumb-sized and fits the phone', await pg.evaluate("(() => { const r = document.getElementById('pulseDigest').getBoundingClientRect(); return r.height >= 44 && r.right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth; })()"))
+                await pg.locator('#pulseHero').screenshot(path=f'{SHOTS}/phone-pulse-card-saved.png')
+                GH['mode'] = 'ok'; before = len(reqs)
+                await pg.click('#pulseDigest'); await pg.wait_for_selector('#view-shipped[data-digest-status="ready"]', timeout=5000); await pg.wait_for_timeout(600)
+                check('pulse: tapping the card opens the digest, which reads GitHub as before', await pg.get_attribute('.nav-bottom[data-nav="shipped"]', 'aria-current') == 'page' and len(digest_reqs()) == 1 + len(NAMES), digest_reqs())
+            elif store is no_digest and mode == 'ok':
+                check('pulse: no saved digest, plain Last 24 hours button', not has_card and (await txt(pg, '#pulseHero [data-pulse-digest]')).strip() == 'Last 24 hours')
+                await pg.locator('#pulseHero').screenshot(path=f'{SHOTS}/phone-pulse-card-none.png')
+            elif store is saved:
+                check(f'pulse: the saved card still shows ({name})', has_card)
+            check(f'cost: no page errors ({name})', not pg.errs, pg.errs)
+            await ctx.close()
+        # a digest saved on an earlier day says which day
+        GH['mode'] = 'ok'
+        old = json.loads(saved[DKEY]); old['fetchedAt'] -= 30 * 3600 * 1000
+        pg = await new_page(b, 390, 844, {**saved, DKEY: json.dumps(old)})
+        head = (await pg.locator('#pulseDigest > span').all_text_contents())[0].strip()
+        check('pulse: an older saved digest gives the day too', re.fullmatch(r'Last 24 hours, as of \d{1,2} \w{3}, \d\d:\d\d', head), head)
+        await pg.context.close()
+        # a damaged saved digest leaves Pulse working, with the plain button
+        for bad in ['{', json.dumps({'fetchedAt': 'garbage'}), json.dumps({**old, 'merged': 'x'}), json.dumps({**old, 'runs': [None]})]:
+            pg = await new_page(b, 390, 844, {**saved, DKEY: bad})
+            check(f'pulse: a damaged saved digest shows the plain button ({bad[:30]})', 'need' in await txt(pg, '#pulseHero h1') and (await txt(pg, '#pulseHero [data-pulse-digest]')).strip() == 'Last 24 hours' and not pg.errs, (await txt(pg, '#pulseHero'), pg.errs))
+            await pg.context.close()
         await b.close()
     print('\nFAILED: ' + ', '.join(FAIL) if FAIL else '\nALL PASSED')
     sys.exit(1 if FAIL else 0)
