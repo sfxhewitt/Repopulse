@@ -447,6 +447,11 @@ async def main():
         head = (await pg.locator('#pulseDigest > span').all_text_contents())[0].strip()
         check('pulse: an older saved digest gives the day too', re.fullmatch(r'Last 24 hours, as of \d{1,2} \w{3}, \d\d:\d\d', head), head)
         await pg.context.close()
+        # a damaged saved digest leaves Pulse working, with the plain button
+        for bad in ['{', json.dumps({'fetchedAt': 'garbage'}), json.dumps({**old, 'merged': 'x'}), json.dumps({**old, 'runs': [None]})]:
+            pg = await new_page(b, 390, 844, {**saved, DKEY: bad})
+            check(f'pulse: a damaged saved digest shows the plain button ({bad[:30]})', 'need' in await txt(pg, '#pulseHero h1') and (await txt(pg, '#pulseHero [data-pulse-digest]')).strip() == 'Last 24 hours' and not pg.errs, (await txt(pg, '#pulseHero'), pg.errs))
+            await pg.context.close()
         await b.close()
     print('\nFAILED: ' + ', '.join(FAIL) if FAIL else '\nALL PASSED')
     sys.exit(1 if FAIL else 0)

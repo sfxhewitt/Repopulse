@@ -451,7 +451,12 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
    * The third line (open pull requests) is already in the headline above it. */
   function pulseDigest() {
     const raw = savedDigest();
-    const model = raw && raw.fetchedAt ? Digest.summarise(raw, [], { now: raw.fetchedAt }) : null;
+    let model = null;
+    try {
+      if (raw && Number.isFinite(raw.fetchedAt)) model = Digest.summarise(raw, [], { now: raw.fetchedAt });
+    } catch {
+      model = null; // a damaged saved copy: show the plain button rather than break Pulse
+    }
     if (!model) return `<button type="button" data-act="digest-open" data-pulse-digest class="btn btn-quiet h-9 px-4 text-sm"><i data-lucide="sunrise" class="w-3.5 h-3.5"></i>Last 24 hours</button>`;
     const at = new Date(model.fetchedAt);
     const clock = at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
