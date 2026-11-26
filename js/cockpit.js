@@ -1674,6 +1674,31 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     }
   });
 
+  /* ---- coming back to the app: an installed app is rarely reloaded, so check again when it's looked at ---- */
+  const RETURN_STALE = 5 * 60000; // how old the data may be before a return refreshes it
+  const RETURN_RETRY = 60000; // and how soon another attempt may follow one that started
+  const R = { busy: false, triedAt: 0 };
+
+  function refreshOnReturn() {
+    if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+    if (S.mode !== 'live' || !S.token || !S.username || R.busy) return;
+    if (!['pulse', 'attention', 'shipped'].includes(C.view)) return; // leave filters, a comparison or a half-typed question alone
+    if (C.status === 'loading' || C.status === 'unsupported') return;
+    const idle = ['inspectorDrawerRoot', 'authModalRoot'].every((id) => !$(id) || $(id).classList.contains('hidden'));
+    if (!idle || confirmResolve || paletteOpen() || cardOpen()) return; // not while something is open on top
+    const now = Date.now();
+    if (now - (C.data ? C.data.fetchedAt : 0) < RETURN_STALE || now - R.triedAt < RETURN_RETRY) return;
+    R.busy = true;
+    R.triedAt = now;
+    Promise.resolve(RP.fetchLiveUserAndRepos(S.username, { quiet: true }))
+      .catch(() => {})
+      .finally(() => (R.busy = false));
+  }
+
+  document.addEventListener('visibilitychange', refreshOnReturn);
+  window.addEventListener('pageshow', (e) => e.persisted && refreshOnReturn());
+  window.addEventListener('online', refreshOnReturn);
+
   document.addEventListener('DOMContentLoaded', () => {
     $('openPaletteBtn').addEventListener('click', openPalette);
     $('shareCardBtn').addEventListener('click', openCard);

@@ -289,6 +289,32 @@ async def main():
         check('link: no page errors', not pg.errs, pg.errs)
         await pg.context.close()
 
+        # ---- coming back to the app after a while refreshes it ----
+        pg = await new_page(b, 390, 844, {'repopulse_github_pat': 'ghp_test', 'repopulse_last_username': 'sfxhewitt'}, '?view=attention')
+        back = "document.dispatchEvent(new Event('visibilitychange'))"
+        gql = lambda: CALLS.count('POST /graphql')
+        n = gql()
+        await pg.evaluate(back); await pg.wait_for_timeout(500)
+        check('return: fresh data is left alone', gql() == n, CALLS[-4:])
+        await pg.evaluate("(() => { const real = Date.now; Date.now = () => real() + 6 * 60000; })()")
+        await pg.click('.nav-bottom[data-nav="repos"]')
+        await pg.evaluate(back); await pg.wait_for_timeout(500)
+        check('return: Repos is left alone, filters and all', gql() == n, CALLS[-4:])
+        await pg.click('.nav-bottom[data-nav="attention"]')
+        await pg.click('[data-act="merge"]')
+        await pg.evaluate(back); await pg.wait_for_timeout(500)
+        check('return: nothing moves under an open question', gql() == n and 'Merge' in await txt(pg, '#confirmTitle'), CALLS[-4:])
+        await pg.keyboard.press('Escape')
+        await pg.evaluate("window.scrollTo(0, 300)")
+        await pg.evaluate(back); await pg.evaluate(back); await pg.wait_for_timeout(1200)
+        check('return: after five minutes away it reads GitHub again, once', gql() == n + 1 and 'Checked just now' in await txt(pg, '#view-attention'), CALLS[-6:])
+        check('return: and keeps your place on the page', await pg.evaluate("window.scrollY") > 200, await pg.evaluate("window.scrollY"))
+        check('return: no toast for a refresh that worked', await pg.locator('#toastContainer > div').count() == 0, await txt(pg, '#toastContainer'))
+        await pg.evaluate(back); await pg.wait_for_timeout(500)
+        check('return: then leaves it alone again', gql() == n + 1, CALLS[-4:])
+        check('return: no page errors', not pg.errs, pg.errs)
+        await pg.context.close()
+
         # ---- deep links to the digest ----
         pg = await new_page(b, 390, 844, None, '?user=sfxhewitt&view=digest')
         check('link: ?view=digest without a token asks for one', 'needs a GitHub token' in await txt(pg, '#view-shipped') and await pg.get_attribute('.nav-bottom[data-nav="shipped"]', 'aria-current') == 'page', await txt(pg, '#view-shipped'))
