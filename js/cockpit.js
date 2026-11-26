@@ -409,32 +409,6 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
   }
 
   /* ---- Pulse ------------------------------------------------------------ */
-  /* The last 24 hours on Pulse: the digest's first two lines once it is known, a plain button until then.
-   * The third line (open pull requests) is already in the headline above it. */
-  function pulseDigest() {
-    const D = C.digest;
-    const mine = D.owner === (S.mode === 'demo' ? 'demo' : (S.username || '').toLowerCase());
-    const model = mine ? digestModel() : null;
-    if (!model) return `<button type="button" data-act="digest-open" class="btn btn-quiet h-9 px-4 text-sm"><i data-lucide="sunrise" class="w-3.5 h-3.5"></i>Last 24 hours</button>`;
-    const old = model.fetchedAt && Date.now() - model.fetchedAt > 15 * 60000;
-    const bad = model.counts.failedRuns + model.counts.failedDeploys > 0;
-    return `<button type="button" data-act="digest-open" id="pulseDigest" class="basis-full sm:max-w-md text-left rounded-lg border border-zinc-200 dark:border-white/[0.1] bg-white/80 dark:bg-white/[0.04] px-4 py-3 hover:border-indigo-400 dark:hover:border-indigo-400/60 transition-colors">
-      <span class="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-        <span class="flex items-center gap-1.5 min-w-0"><i data-lucide="sunrise" class="w-3.5 h-3.5 shrink-0"></i><span class="truncate">Last 24 hours${old ? `, checked ${h(RP.formatRelativeTime(new Date(model.fetchedAt).toISOString()))}` : ''}</span></span>
-        <i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i>
-      </span>
-      <span class="block text-sm font-medium text-zinc-900 dark:text-zinc-100 mt-1.5 break-words">${h(model.lines[0])}</span>
-      <span class="block text-sm mt-0.5 break-words ${bad ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-600 dark:text-zinc-400'}">${h(model.lines[1])}</span>
-    </button>`;
-  }
-
-  function paintPulseDigest() {
-    const slot = $('pulseDigestSlot');
-    if (!slot) return;
-    slot.innerHTML = pulseDigest();
-    icons();
-  }
-
   function tracePath(days) {
     const step = 8, base = 68, max = Math.max(1, ...days.map((d) => d.count));
     let d = `M0 ${base}`;
@@ -445,6 +419,32 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       d += ` L${x + 2} ${base} L${x + 3} ${base + 4} L${x + 4.2} ${(base - amp).toFixed(1)} L${x + 5.4} ${base + 7} L${x + 6.4} ${base} L${x + step} ${base}`;
     });
     return { d, width: days.length * step, base };
+  }
+
+  /* The last 24 hours on Pulse: the digest's first two lines once it is known, a plain button until then.
+   * The third line (open pull requests) is already in the headline above it. */
+  function pulseDigest() {
+    const D = C.digest;
+    const mine = D.owner === (S.mode === 'demo' ? 'demo' : (S.username || '').toLowerCase());
+    const model = mine ? digestModel() : null;
+    if (!model) return `<button type="button" data-act="digest-open" data-pulse-digest class="btn btn-quiet h-9 px-4 text-sm"><i data-lucide="sunrise" class="w-3.5 h-3.5"></i>Last 24 hours</button>`;
+    const old = model.fetchedAt && Date.now() - model.fetchedAt > 15 * 60000;
+    const bad = model.counts.failedRuns + model.counts.failedDeploys > 0;
+    return `<button type="button" data-act="digest-open" id="pulseDigest" data-pulse-digest class="w-full max-w-md text-left rounded-lg border border-zinc-200 dark:border-white/[0.08] bg-white/80 dark:bg-white/[0.05] px-4 py-3 hover:border-indigo-500/40 transition-colors">
+      <span class="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+        <span class="flex items-center gap-1.5 min-w-0"><i data-lucide="sunrise" class="w-3.5 h-3.5 shrink-0"></i><span class="truncate">Last 24 hours${old ? `, checked ${h(RP.formatRelativeTime(new Date(model.fetchedAt).toISOString()))}` : ''}</span></span>
+        <i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i>
+      </span>
+      <span class="block text-sm font-medium text-zinc-900 dark:text-zinc-100 mt-1.5 break-words">${h(model.lines[0])}</span>
+      <span class="block text-sm mt-0.5 break-words ${bad ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-600 dark:text-zinc-400'}">${h(model.lines[1])}</span>
+    </button>`;
+  }
+
+  function paintPulseDigest() {
+    const slot = document.querySelector('#pulseHero [data-pulse-digest]');
+    if (!slot) return;
+    slot.outerHTML = pulseDigest();
+    icons();
   }
 
   function renderPulse() {
@@ -466,7 +466,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       sub = week.length ? `${plural(week.length, 'commit')} across ${plural(repoCount, 'repo')} this week.` : 'No commits on a default branch this week.';
       if (st && st.current > 1) sub += ` ${st.current}-day streak.`;
       cta = urgent ? `<button type="button" data-nav-go="attention" class="btn btn-accent h-9 px-4 text-sm">See what needs you</button>` : `<button type="button" data-nav-go="shipped" class="btn btn-quiet h-9 px-4 text-sm">See what you shipped</button>`;
-      cta += `<span id="pulseDigestSlot" class="contents">${pulseDigest()}</span>`;
+      cta += pulseDigest();
     } else if (C.status === 'loading') {
       headline = 'Reading your repos…';
       sub = 'Pull requests, checks and commits are on their way.';
