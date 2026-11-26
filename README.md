@@ -6,7 +6,7 @@ Live: https://sfxhewitt.github.io/Repopulse/
 
 ## What it shows
 
-- **Pulse**: how many things need you, what you shipped this week, your contribution year, streaks, and which projects are heating up or cooling off.
+- **Pulse**: how many things need you, the first two lines of the 24-hour digest (tap for the rest), what you shipped this week, your contribution year, streaks, and which projects are heating up or cooling off.
 - **Needs you**: pull requests ready to merge or held up, failing CI on default branches, Dependabot alerts, stale branches and repos gone quiet. You can merge, re-run failed jobs and archive from here; each asks first.
 - **Shipped**: commits that reached a default branch in the last 7 or 30 days. Its **24 hours** setting is the "what shipped" digest: merged pull requests, deploys and Pages builds, and failed workflow runs, grouped by repo, with failed runs and open pull requests at the top and a three-line summary you can copy.
 - **Repos**: every repo with a health score and the reasons behind it, filters, export, and an inspector.

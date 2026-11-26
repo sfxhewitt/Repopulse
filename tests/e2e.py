@@ -157,6 +157,10 @@ async def main():
             await pg.screenshot(path=f'{SHOTS}/phone-{v}.png')
         check('demo: repo cards carry a health badge', await pg.locator('#repoGridContainer [title^="Health"]').count() >= 15)
         await pg.click('.nav-bottom[data-nav="pulse"]')
+        card = [t.strip() for t in (await pg.locator('#pulseDigest > span').all_text_contents())]
+        check('demo pulse: summary card shows two lines of the digest', len(card) == 3 and card[0] == 'Last 24 hours' and 'merges across' in card[1] and 'failed run' in card[2], card)
+        check('demo pulse: card is thumb-sized and fits the phone', await pg.evaluate("(() => { const r = document.getElementById('pulseDigest').getBoundingClientRect(); return r.height >= 44 && r.right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth; })()"))
+        await pg.screenshot(path=f'{SHOTS}/phone-pulse-digest.png')
         await pg.click('[data-act="digest-open"]'); await pg.wait_for_timeout(300)
         demo_lines = (await txt(pg, '#digestSummary')).split('\n')
         check('demo digest: Pulse button opens the 24-hour view with three lines', len(demo_lines) == 3 and 'merges across' in demo_lines[0] and 'failed run' in demo_lines[1] and 'waiting on you' in demo_lines[2], demo_lines)
@@ -185,6 +189,11 @@ async def main():
         check('live: hero says 4 things need you', head.startswith('4 things'), head)
         check('live: one GraphQL call', CALLS.count('POST /graphql') == 1, CALLS)
         check('live: nav badge shows 4', await txt(pg, '.nav-tab [data-attention-count]') == '4')
+        card = [t.strip() for t in (await pg.locator('#pulseDigest > span').all_text_contents())]
+        check('pulse: the last 24 hours are on the first screen', card == ['Last 24 hours', '3 merges across 2 repos, 1 deploy', '1 failed run: stock-watch tests'], card)
+        check('pulse: a failed run is in red', 'text-rose-600' in (await pg.get_attribute('#pulseDigest > span:last-child', 'class')))
+        dig_calls = [c for c in CALLS if c == 'POST /graphql#digest' or c.endswith('/actions/runs')]
+        check('digest: one GraphQL call plus one runs call per live repo', dig_calls.count('POST /graphql#digest') == 1 and len(dig_calls) == 1 + len(NAMES), CALLS)
         await pg.screenshot(path=f'{SHOTS}/desk-pulse.png', full_page=True)
         await pg.keyboard.press('2')
         att = await txt(pg, '#view-attention')
@@ -211,7 +220,7 @@ async def main():
         summary = await txt(pg, '#digestSummary')
         check('digest: three-line summary', summary == '3 merges across 2 repos, 1 deploy\n1 failed run: stock-watch tests\n1 PR waiting on you', summary)
         new = CALLS[len(before):]
-        check('digest: one GraphQL call plus one runs call per live repo', new.count('POST /graphql#digest') == 1 and len(new) == 5 and all(c.endswith('/actions/runs') for c in new if 'graphql' not in c), new)
+        check('digest: opening it within five minutes of Pulse reads nothing twice', new == [], new)
         needs = await txt(pg, '#digestNeeds')
         check('digest: failed run listed before the open pull request', 0 <= needs.find('tests failed') < needs.find('Design critique fixes'), needs)
         dig = await txt(pg, '#view-shipped')
