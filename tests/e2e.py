@@ -1,5 +1,5 @@
 """Drive RepoPulse in Chromium with GitHub and Anthropic stubbed. Usage: e2e.py <site dir> <shots dir>"""
-import sys, json, asyncio, threading, functools, http.server, socketserver, datetime, os
+import sys, re, json, asyncio, threading, functools, http.server, socketserver, datetime, os
 from playwright.async_api import async_playwright
 
 SITE, SHOTS = sys.argv[1], sys.argv[2]
@@ -51,6 +51,30 @@ def gql_response():
         "contributionsCollection": {"contributionCalendar": {"totalContributions": sum(d["contributionCount"] for d in days), "weeks": weeks}},
         "repositories": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [gql_repo(*n) for n in NAMES]}}}}
 
+# ---- the 24-hour digest: merged PRs by search, deployments per repo alias, workflow runs over REST ----
+DIGEST = {'mode': 'normal'}  # normal | empty | limited
+hours = lambda h: iso(h / 24)
+def digest_response(query):
+    if DIGEST['mode'] == 'empty':
+        return {"data": {"merged": {"issueCount": 0, "nodes": []}, **{f"d{i}": {"deployments": {"nodes": []}} for i, _ in re.findall(r'd(\d+): repository\(owner: "sfxhewitt", name: "([\w-]+)"\)', query)}}}
+    merged = lambda name, n, title, h: {"number": n, "title": title, "url": f"https://github.com/sfxhewitt/{name}/pull/{n}", "mergedAt": hours(h), "author": {"login": "claude"}, "repository": {"nameWithOwner": f"sfxhewitt/{name}"}}
+    data = {"merged": {"issueCount": 3, "nodes": [merged('hq', 7, 'Ship the digest', 2), merged('hq', 6, 'Tidy the header', 9), merged('plexodus', 41, 'Faster library scan', 5)]}}
+    errors = []
+    for i, name in re.findall(r'd(\d+): repository\(owner: "sfxhewitt", name: "([\w-]+)"\)', query):
+        if name == 'tabbeth':  # a token without Deployments access: one alias comes back null
+            data[f"d{i}"] = None
+            errors.append({"type": "FORBIDDEN", "path": [f"d{i}", "deployments"], "message": "Resource not accessible by personal access token"})
+        elif name == 'hq':
+            data[f"d{i}"] = {"deployments": {"nodes": [{"createdAt": hours(1.9), "environment": "github-pages", "state": "ACTIVE", "latestStatus": {"state": "SUCCESS", "logUrl": None, "environmentUrl": "https://sfxhewitt.github.io/hq/"}}]}}
+        else:
+            data[f"d{i}"] = {"deployments": {"nodes": []}}
+    return {"data": data, "errors": errors}
+def runs_response(u):
+    if DIGEST['mode'] != 'empty' and '/stock-watch/' in u:
+        return {"workflow_runs": [{"id": 78, "workflow_id": 3, "name": "tests", "head_branch": "main", "event": "schedule", "status": "completed", "conclusion": "failure",
+                                   "html_url": "https://github.com/sfxhewitt/stock-watch/actions/runs/78", "created_at": hours(4), "display_title": "tests"}]}
+    return {"workflow_runs": []}
+
 CALLS = []
 ASKS = []
 async def handle(route):
@@ -64,6 +88,10 @@ async def handle(route):
     if 'api.github.com' in u or 'api.anthropic.com' in u:
         CALLS.append(f"{req.method} {u.split('.com')[1].split('?')[0]}")
     if u == 'https://api.github.com/graphql':
+        query = json.loads(req.post_data)['query']
+        if 'query Digest' in query:
+            CALLS[-1] = 'POST /graphql#digest'
+            return await route.fulfill(json=digest_response(query), headers=hdr)
         return await route.fulfill(json=gql_response(), headers=hdr)
     if u == 'https://api.github.com/user':
         return await route.fulfill(json=PROFILE, headers=hdr)
@@ -75,6 +103,10 @@ async def handle(route):
         return await route.fulfill(json=OTHER, headers=hdr)
     if 'api.github.com/users/sfxhewitt' in u:
         return await route.fulfill(json=PROFILE, headers=hdr)
+    if '/actions/runs' in u and req.method == 'GET' and 'created=' in u:
+        if DIGEST['mode'] == 'limited':
+            return await route.fulfill(status=403, json={"message": "API rate limit exceeded"}, headers={**hdr, "x-ratelimit-remaining": "0"})
+        return await route.fulfill(json=runs_response(u), headers=hdr)
     if '/actions/runs' in u and req.method == 'GET':
         return await route.fulfill(json={"workflow_runs": [{"id": 77, "name": "tests", "conclusion": "failure"}]}, headers=hdr)
     if 'api.github.com/repos/' in u and req.method in ('PUT', 'POST', 'PATCH'):
@@ -124,6 +156,18 @@ async def main():
             await pg.wait_for_timeout(250)
             await pg.screenshot(path=f'{SHOTS}/phone-{v}.png')
         check('demo: repo cards carry a health badge', await pg.locator('#repoGridContainer [title^="Health"]').count() >= 15)
+        await pg.click('.nav-bottom[data-nav="pulse"]')
+        await pg.click('[data-act="digest-open"]'); await pg.wait_for_timeout(300)
+        demo_lines = (await txt(pg, '#digestSummary')).split('\n')
+        check('demo digest: Pulse button opens the 24-hour view with three lines', len(demo_lines) == 3 and 'merges across' in demo_lines[0] and 'failed run' in demo_lines[1] and 'waiting on you' in demo_lines[2], demo_lines)
+        check('demo digest: needs-you sits above the repo groups', await pg.evaluate("(() => { const n = document.getElementById('digestNeeds'); const next = n && n.nextElementSibling; return Boolean(n && next && next.tagName === 'SECTION' && n.previousElementSibling.getAttribute('aria-label') === 'Summary'); })()"))
+        check('demo digest: nothing wider than the phone', await pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
+        check('demo digest: Copy and Refresh are thumb-sized', await pg.evaluate("Array.from(document.querySelectorAll('[data-act=digest-copy], [data-act=digest-refresh]')).every((b) => b.getBoundingClientRect().height >= 40)"))
+        await pg.screenshot(path=f'{SHOTS}/phone-digest.png', full_page=True)
+        await pg.click('[data-act="digest-copy"]'); await pg.wait_for_timeout(200)
+        check('demo digest: copy confirms', 'Summary copied' in await txt(pg, '#toastContainer'), await txt(pg, '#toastContainer'))
+        check('demo digest: no GitHub calls for sample data', not CALLS, CALLS)
+        await pg.click('[data-ship-range="7"]')
         await pg.click('.nav-bottom[data-nav="attention"]')
         await pg.click('[data-act="merge"]')
         check('demo: merge asks first', 'Merge #' in await txt(pg, '#confirmTitle'))
@@ -161,6 +205,34 @@ async def main():
         await pg.keyboard.press('3')
         check('live: ship log lists commits', 'commits across' in await txt(pg, '#view-shipped h1'), await txt(pg, '#view-shipped h1'))
         await pg.screenshot(path=f'{SHOTS}/desk-shipped.png')
+        before = list(CALLS)
+        await pg.context.grant_permissions(['clipboard-read', 'clipboard-write'])
+        await pg.click('[data-ship-range="1"]'); await pg.wait_for_timeout(700)
+        summary = await txt(pg, '#digestSummary')
+        check('digest: three-line summary', summary == '3 merges across 2 repos, 1 deploy\n1 failed run: stock-watch tests\n1 PR waiting on you', summary)
+        new = CALLS[len(before):]
+        check('digest: one GraphQL call plus one runs call per live repo', new.count('POST /graphql#digest') == 1 and len(new) == 5 and all(c.endswith('/actions/runs') for c in new if 'graphql' not in c), new)
+        needs = await txt(pg, '#digestNeeds')
+        check('digest: failed run listed before the open pull request', 0 <= needs.find('tests failed') < needs.find('Design critique fixes'), needs)
+        dig = await txt(pg, '#view-shipped')
+        for needle in ['Ship the digest', 'Faster library scan', 'Pages build', "Deploys couldn't be read for tabbeth"]:
+            check(f'digest: shows "{needle}"', needle in dig)
+        check('digest: grouped by repo, most recent first', [await h.text_content() for h in await pg.locator('#view-shipped section h2 button').all()] == ['hq', 'plexodus'])
+        check('digest: status flag for automation', await pg.get_attribute('#view-shipped', 'data-digest-status') == 'ready')
+        check('digest: range is in the address', 'range=24h' in pg.url, pg.url)
+        await pg.click('[data-act="digest-copy"]'); await pg.wait_for_timeout(200)
+        check('digest: Copy puts the three lines on the clipboard', await pg.evaluate('navigator.clipboard.readText()') == summary)
+        await pg.screenshot(path=f'{SHOTS}/desk-digest.png', full_page=True)
+        DIGEST['mode'] = 'limited'
+        await pg.click('[data-act="digest-refresh"]'); await pg.wait_for_timeout(700)
+        lim = (await txt(pg, '#digestSummary')).split('\n')
+        check('digest: rate limit keeps the merges and owns up about runs', lim[0].startswith('3 merges') and lim[1] == 'Failed runs not checked' and 'rate limit has run out' in await txt(pg, '#view-shipped'), lim)
+        DIGEST['mode'] = 'empty'
+        await pg.click('[data-act="digest-refresh"]'); await pg.wait_for_timeout(700)
+        check('digest: an empty night', (await txt(pg, '#digestSummary')).split('\n')[:2] == ['Nothing merged or deployed in the last 24 hours', 'No failed runs'] and 'Nothing shipped' in await txt(pg, '#view-shipped h1'), await txt(pg, '#digestSummary'))
+        DIGEST['mode'] = 'normal'
+        await pg.click('[data-ship-range="7"]')
+        check('digest: 7 days brings the commit log back', 'commits across' in await txt(pg, '#view-shipped h1'))
         await pg.keyboard.press('4'); await pg.keyboard.press('j'); await pg.keyboard.press('j'); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(600)
         check('live: j/j/Enter opens the second repo', await txt(pg, '#drawerRepoName') == 'plexodus', await txt(pg, '#drawerRepoName'))
         check('live: drawer shows health', 'Health' in await txt(pg, '#drawerHealth'))
@@ -206,6 +278,20 @@ async def main():
         check('phone: filter bar sits below the header when stuck', abs(overlap) < 2, f'{overlap} / {hh}')
         await pg.screenshot(path=f'{SHOTS}/phone-repos-scrolled.png')
         check('link: no page errors', not pg.errs, pg.errs)
+        await pg.context.close()
+
+        # ---- deep links to the digest ----
+        pg = await new_page(b, 390, 844, None, '?user=sfxhewitt&view=digest')
+        check('link: ?view=digest without a token asks for one', 'needs a GitHub token' in await txt(pg, '#view-shipped') and await pg.get_attribute('.nav-bottom[data-nav="shipped"]', 'aria-current') == 'page', await txt(pg, '#view-shipped'))
+        await pg.context.close()
+        pg = await new_page(b, 390, 844, {'repopulse_github_pat': 'ghp_test', 'repopulse_last_username': 'sfxhewitt'}, '?view=shipped&range=24h')
+        await pg.wait_for_selector('#view-shipped[data-digest-status="ready"]', timeout=5000)
+        boot = (await txt(pg, '#digestSummary')).split('\n')
+        check('link: ?view=shipped&range=24h loads the digest on a phone', boot == ['3 merges across 2 repos, 1 deploy', '1 failed run: stock-watch tests', '2 PRs waiting on you'], boot)
+        check('link: digest fits the phone', await pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
+        check('link: digest saved for offline', await pg.evaluate("Boolean(localStorage.getItem('repopulse_digest_v1:sfxhewitt'))"))
+        await pg.screenshot(path=f'{SHOTS}/phone-digest-live.png', full_page=True)
+        check('link: digest no page errors', not pg.errs, pg.errs)
         await pg.context.close()
         await b.close()
     print('\nFAILED: ' + ', '.join(FAIL) if FAIL else '\nALL PASSED')
