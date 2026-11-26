@@ -369,10 +369,6 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     });
     if (!opts.keepScroll) window.scrollTo(0, 0);
     if (view === 'shipped' && C.shipRange === 1) ensureDigest();
-    if (view === 'pulse' && C.booted) {
-      ensureDigest();
-      paintPulseDigest();
-    }
     syncUrl();
   }
 
@@ -450,18 +446,20 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
     return { d, width: days.length * step, base };
   }
 
-  /* The last 24 hours on Pulse: the digest's first two lines once it is known, a plain button until then.
+  /* The last 24 hours on Pulse: the first two lines of the digest saved by the 24-hour view, as they stood
+   * when it was read, and a plain button when nothing is saved. Pulse never reads GitHub for this.
    * The third line (open pull requests) is already in the headline above it. */
   function pulseDigest() {
-    const D = C.digest;
-    const mine = D.owner === (S.mode === 'demo' ? 'demo' : (S.username || '').toLowerCase());
-    const model = mine ? digestModel() : null;
+    const raw = savedDigest();
+    const model = raw && raw.fetchedAt ? Digest.summarise(raw, [], { now: raw.fetchedAt }) : null;
     if (!model) return `<button type="button" data-act="digest-open" data-pulse-digest class="btn btn-quiet h-9 px-4 text-sm"><i data-lucide="sunrise" class="w-3.5 h-3.5"></i>Last 24 hours</button>`;
-    const old = model.fetchedAt && Date.now() - model.fetchedAt > 15 * 60000;
+    const at = new Date(model.fetchedAt);
+    const clock = at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const asOf = at.toDateString() === new Date().toDateString() ? clock : `${at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${clock}`;
     const bad = model.counts.failedRuns + model.counts.failedDeploys > 0;
     return `<button type="button" data-act="digest-open" id="pulseDigest" data-pulse-digest class="w-full max-w-md text-left rounded-lg border border-zinc-200 dark:border-white/[0.08] bg-white/80 dark:bg-white/[0.05] px-4 py-3 hover:border-indigo-500/40 transition-colors">
       <span class="flex items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-        <span class="flex items-center gap-1.5 min-w-0"><i data-lucide="sunrise" class="w-3.5 h-3.5 shrink-0"></i><span class="truncate">Last 24 hours${old ? `, checked ${h(RP.formatRelativeTime(new Date(model.fetchedAt).toISOString()))}` : ''}</span></span>
+        <span class="flex items-center gap-1.5 min-w-0"><i data-lucide="sunrise" class="w-3.5 h-3.5 shrink-0"></i><span class="truncate">Last 24 hours, as of ${h(asOf)}</span></span>
         <i data-lucide="chevron-right" class="w-4 h-4 shrink-0"></i>
       </span>
       <span class="block text-sm font-medium text-zinc-900 dark:text-zinc-100 mt-1.5 break-words">${h(model.lines[0])}</span>
@@ -722,6 +720,18 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
   /* ---- What shipped: the last 24 hours ---------------------------------- */
   const DIGEST_FRESH = 5 * 60000;
 
+  /* The digest already in memory or saved in this browser, without reading GitHub. */
+  function savedDigest() {
+    const D = C.digest;
+    if (S.mode === 'demo') {
+      if (D.owner !== 'demo') Object.assign(D, { run: D.run + 1, raw: buildDemoDigest(), owner: 'demo', status: 'ready', error: '' });
+    } else if (S.username && D.owner !== S.username.toLowerCase()) {
+      const raw = loadSavedDigest(S.username);
+      Object.assign(D, { run: D.run + 1, raw, owner: S.username.toLowerCase(), status: raw ? 'ready' : 'idle', error: '' });
+    }
+    return D.raw;
+  }
+
   function loadSavedDigest(login) {
     try {
       return JSON.parse(localStorage.getItem(`${KEYS.DIGEST}:${login.toLowerCase()}`) || 'null');
@@ -775,13 +785,7 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
       return;
     }
     const login = S.username;
-    if (D.owner !== login.toLowerCase()) {
-      D.run++;
-      D.raw = loadSavedDigest(login);
-      D.owner = login.toLowerCase();
-      D.status = D.raw ? 'ready' : 'idle';
-      D.error = '';
-    }
+    savedDigest();
     const fresh = D.raw && Date.now() - D.raw.fetchedAt < DIGEST_FRESH;
     if (D.status === 'loading' || (fresh && !force) || !S.token) return;
     const run = ++D.run;
@@ -1608,14 +1612,13 @@ query Cockpit($login: String!, $cursor: String, $since: GitTimestamp!, $first: B
           })
           .finally(() => {
             if (run !== C.run) return;
-            if (digestShowing() || C.view === 'pulse') ensureDigest();
+            if (digestShowing()) ensureDigest();
             RP.applyFiltersAndRender();
             renderViews();
           });
       }
       if (C.data) RP.applyFiltersAndRender(); // health badges need the cockpit data
       if (digestShowing()) ensureDigest(true);
-      else if (C.view === 'pulse') ensureDigest(); // Pulse carries the first two lines of the digest
       renderViews();
       syncUrl();
     },
